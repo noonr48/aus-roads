@@ -23,6 +23,16 @@ import dagger.assisted.AssistedInject
 import kotlinx.serialization.json.Json
 import java.io.File
 
+/**
+ * Lenient JSON matching ManifestFetcher's, so a manifest accepted at fetch time
+ * (e.g. with unknown keys) also decodes here — otherwise it would decode to null
+ * and verification would be silently skipped.
+ */
+private val MANIFEST_JSON = Json {
+    ignoreUnknownKeys = true
+    isLenient = true
+}
+
 @HiltWorker
 class MapPackDownloadWorker @AssistedInject constructor(
     @Assisted appContext: Context,
@@ -86,7 +96,7 @@ class MapPackDownloadWorker @AssistedInject constructor(
                 .putString("phase", DownloadProgress.Phase.VERIFYING.name)
                 .build())
             val manifest = manifestJson?.let {
-                try { Json.decodeFromString(PackManifest.serializer(), it) } catch (_: Exception) { null }
+                try { MANIFEST_JSON.decodeFromString(PackManifest.serializer(), it) } catch (_: Exception) { null }
             }
             setProgressAsync(Data.Builder()
                 .putString("phase", DownloadProgress.Phase.INSTALLING.name)
