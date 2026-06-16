@@ -1,0 +1,8 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <color name="seed">#1B5E20</color>      <!-- dark green; "road" palette anchor -->
+    <color name="seed_light">#4C8C4A</color>
+    <color name="seed_dark">#003300</color>
+    <color name="warning">#F08C2E</color>
+    <color name="danger">#D8323C</color>
+</resources>

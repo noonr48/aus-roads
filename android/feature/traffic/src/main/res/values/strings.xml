@@ -1,0 +1,5 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="traffic_offline">Traffic: offline</string>
+    <string name="traffic_event_count">%d events</string>
+</resources>

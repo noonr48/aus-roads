@@ -1,0 +1,59 @@
+# --- Gradle / build outputs ---
+.gradle/
+build/
+*/build/
+*/*/build/
+*/*/*/build/
+.kotlin/
+captures/
+
+# --- IDE / editor ---
+.idea/
+*.iml
+*.ipr
+*.iws
+.vscode/
+.DS_Store
+*.swp
+*.swo
+
+# --- Android ---
+local.properties
+**/local.properties
+.cxx/
+
+# --- Generated / cached ---
+*.apk
+*.aab
+*.aar
+*.ap_
+*.dex
+*.class
+hs_err_pid*
+replay_pid*
+
+# --- Tool caches ---
+.bsp/
+.bloop/
+.metals/
+.bsp.json
+
+# --- OS junk ---
+Thumbs.db
+desktop.ini
+
+# --- Map pack build artifacts (large binaries; never commit) ---
+tools/map-pack-builder/cache/
+tools/map-pack-builder/dist/
+tools/map-pack-builder/logs/
+tools/map-pack-builder/valhalla-build/
+*.tar
+*.osm.pbf
+
+# --- Solane OS / opencode caches (only outside project if scoped) ---
+.opencode/
+.agent-browser/
+
+# --- Python caches ---
+__pycache__/
+*.pyc

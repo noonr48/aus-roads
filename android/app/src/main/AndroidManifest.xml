@@ -1,0 +1,74 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  aus-roads v0.1 AndroidManifest.
+
+  v0.1 PRIVACY POSTURE (LOCKED):
+    - No INTERNET permission. The app is fully offline; the map pack is downloaded
+      via a side-loaded URL handled by the in-app downloader only after the user
+      explicitly taps "Download map pack" (which switches the manifest via a build
+      flag in v0.1.1+).
+    - No ACCESS_*_LOCATION. No GPS.
+    - No Google Play Services. No analytics. No crash reporter.
+    - v0.2+ flips the INTERNET flag on via a build variant or runtime feature
+      switch — see /home/benbi/Apps/aus-roads/docs/adr/0002-tech-stack.md.
+-->
+<manifest xmlns:android="http://schemas.android.com/apk/res/android"
+    xmlns:tools="http://schemas.android.com/tools">
+
+    <!-- Location stripped on all flavors — safety net for transitive deps -->
+    <uses-permission android:name="android.permission.ACCESS_COARSE_LOCATION" tools:node="remove" />
+    <uses-permission android:name="android.permission.ACCESS_FINE_LOCATION" tools:node="remove" />
+
+    <application
+        android:name=".AusRoadsApp"
+        android:label="@string/app_name"
+        android:icon="@mipmap/ic_launcher"
+        android:roundIcon="@mipmap/ic_launcher_round"
+        android:allowBackup="false"
+        android:dataExtractionRules="@xml/data_extraction_rules"
+        android:fullBackupContent="false"
+        android:theme="@style/Theme.AusRoads.Splash"
+        android:supportsRtl="true"
+        tools:targetApi="34">
+
+        <activity
+            android:name=".MainActivity"
+            android:exported="true"
+            android:theme="@style/Theme.AusRoads.Splash"
+            android:configChanges="orientation|screenSize|smallestScreenSize|screenLayout|keyboardHidden|uiMode"
+            android:windowSoftInputMode="adjustResize">
+            <intent-filter>
+                <action android:name="android.intent.action.MAIN" />
+                <category android:name="android.intent.category.LAUNCHER" />
+            </intent-filter>
+        </activity>
+
+        <receiver
+            android:name=".widget.MapWidgetReceiver"
+            android:exported="false">
+            <intent-filter>
+                <action android:name="android.appwidget.action.APPWIDGET_UPDATE" />
+            </intent-filter>
+            <meta-data
+                android:name="android.appwidget.provider"
+                android:resource="@xml/map_widget_info" />
+        </receiver>
+
+        <!--
+          WorkManager uses on-demand initialization via AusRoadsApp
+          (Configuration.Provider + HiltWorkerFactory). Remove the default
+          androidx.startup WorkManager initializer so the Hilt worker factory is
+          used and WorkManager is not double-initialized.
+        -->
+        <provider
+            android:name="androidx.startup.InitializationProvider"
+            android:authorities="${applicationId}.androidx-startup"
+            android:exported="false"
+            tools:node="merge">
+            <meta-data
+                android:name="androidx.work.WorkManagerInitializer"
+                android:value="androidx.startup"
+                tools:node="remove" />
+        </provider>
+    </application>
+</manifest>

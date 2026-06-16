@@ -1,0 +1,155 @@
+# aus-roads detekt baseline config.
+# Keep this file in sync with /home/benbi/Apps/aus-roads/docs/adr/0002-tech-stack.md
+
+build:
+  maxIssues: 0
+  excludeCorrectable: false
+  weights:
+    complexity: 2
+    LongParameterList: 1
+    style: 1
+    comments: 1
+
+config:
+  validation: true
+  warningsAsErrors: false
+  checkExhaustiveness: false
+
+console-reports:
+  active: true
+  exclude:
+    - 'ProjectStatisticsReport'
+    - 'NotificationReport'
+    - 'FindingsReport'
+    - 'FileBasedFindingsReport'
+
+output-reports:
+  active: true
+
+comments:
+  active: true
+  CommentOverPrivateFunction:
+    active: false
+  CommentOverPrivateProperty:
+    active: false
+
+complexity:
+  active: true
+  CognitiveComplexMethod:
+    active: true
+    threshold: 15
+    ignoreAnnotated:
+      - 'Composable'
+  CyclomaticComplexMethod:
+    active: true
+    threshold: 15
+    ignoreAnnotated:
+      - 'Composable'
+  LongMethod:
+    active: true
+    threshold: 60
+    ignoreAnnotated:
+      - 'Composable'
+  LargeClass:
+    active: true
+    threshold: 300
+  LongParameterList:
+    active: true
+    functionThreshold: 6
+    constructorThreshold: 6
+  NestedBlockDepth:
+    active: true
+    threshold: 4
+
+empty-blocks:
+  active: true
+
+exceptions:
+  active: true
+  SwallowedException:
+    active: true
+    ignoredExceptionTypes:
+      - 'InterruptedException'
+      - 'NumberFormatException'
+      - 'ParseException'
+      - 'MalformedURLException'
+
+naming:
+  active: true
+  ClassNaming:
+    active: true
+  FunctionNaming:
+    active: true
+    ignoreAnnotated:
+      - 'Composable'
+  MatchingDeclarationName:
+    active: false  # Multiple declarations per file is common in Compose (NavHost + Destination)
+  PackageNaming:
+    active: true
+  VariableNaming:
+    active: true
+
+performance:
+  active: true
+  ArrayPrimitive:
+    active: true
+  ForEachOnRange:
+    active: true
+  SpreadOperator:
+    active: true
+
+potential-bugs:
+  active: true
+  AvoidReferentialEquality:
+    active: true
+  CastToNullableType:
+    active: true
+  Deprecation:
+    active: true
+  ImplicitDefaultLocale:
+    active: true
+  UnreachableCode:
+    active: true
+
+style:
+  active: true
+  ForbiddenComment:
+    active: true
+    comments:
+      - reason: 'Forbidden TODO comments in production code; use issues instead.'
+        value: 'TODO:'
+      - reason: 'Forbidden FIXME comments in production code; use issues instead.'
+        value: 'FIXME:'
+  MagicNumber:
+    active: true
+    ignoreNumbers:
+      - '-1'
+      - '0'
+      - '1'
+      - '2'
+      - '100'
+      - '1000'
+      - '-180.0'
+      - '180.0'
+      - '-90.0'
+      - '90.0'
+      - '5000'
+    ignoreAnnotated:
+      - 'Composable'
+    ignorePropertyDeclaration: true
+  MaxLineLength:
+    active: true
+    maxLineLength: 120
+    excludePackageStatements: true
+    excludeImportStatements: true
+  ReturnCount:
+    active: true
+    max: 4
+  UnusedPrivateMember:
+    active: true
+    ignoreAnnotated:
+      - 'Preview'
+  UseCheckOrError:
+    active: true
+  WildcardImport:
+    active: true

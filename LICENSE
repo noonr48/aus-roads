@@ -1,0 +1,34 @@
+                    GNU AFFERO GENERAL PUBLIC LICENSE
+                       Version 3, 19 November 2007
+
+ Copyright (C) 2026 benbi
+
+ This program is free software: you can redistribute it and/or modify
+ it under the terms of the GNU Affero General Public License as
+ published by the Free Software Foundation, either version 3 of the
+ License, or (at your option) any later version.
+
+ This program is distributed in the hope that it will be useful,
+ but WITHOUT ANY WARRANTY; without even the implied warranty of
+ MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+ GNU Affero General Public License for more details.
+
+ You should have received a copy of the GNU Affero General Public
+ License along with this program.  If not, see
+ <https://www.gnu.org/licenses/agpl-3.0.txt>.
+
+========================================================================
+Map data attribution
+========================================================================
+
+The aus-roads offline map pack is derived from OpenStreetMap data,
+licensed under the Open Database License (ODbL) 1.0.
+© OpenStreetMap contributors. https://www.openstreetmap.org/copyright
+
+The Traffic SA live overlay is sourced from the SA Department for
+Infrastructure and Transport, licensed under Creative Commons
+Attribution 4.0 International (CC BY 4.0).
+
+The DIT outback road warnings layer is sourced from the SA
+Department for Infrastructure and Transport, licensed under
+Creative Commons Attribution 3.0 Australia (CC BY 3.0 AU).

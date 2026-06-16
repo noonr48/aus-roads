@@ -1,0 +1,32 @@
+<?xml version="1.0" encoding="utf-8"?>
+<manifest xmlns:android="http://schemas.android.com/apk/res/android"
+    xmlns:tools="http://schemas.android.com/tools">
+    <!-- withNetwork flavor: INTERNET for map pack download. Location for "My Location" button. -->
+    <uses-permission android:name="android.permission.INTERNET" />
+    <uses-permission android:name="android.permission.ACCESS_NETWORK_STATE" />
+    <uses-permission android:name="android.permission.ACCESS_WIFI_STATE" />
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_DATA_SYNC" />
+    <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
+    <!-- Location permissions for "My Location" button and navigation GPS -->
+    <uses-permission android:name="android.permission.ACCESS_COARSE_LOCATION" />
+    <uses-permission android:name="android.permission.ACCESS_FINE_LOCATION" />
+
+    <!-- Android Auto descriptor names a com.google.android.gms.* component, so it is
+         declared only in the withNetwork flavor to keep the privacy-first offline
+         build free of any Google Play Services reference (incl. the manifest). -->
+    <application>
+        <meta-data
+            android:name="com.google.android.gms.car.application"
+            android:resource="@xml/automotive_app_desc" />
+
+        <!-- WorkManager runs the map-pack download as a foreground service. On API 34+
+             the service must declare a foregroundServiceType matching the runtime type
+             (dataSync) and the FOREGROUND_SERVICE_DATA_SYNC permission above; without
+             this the download worker crashes with "foregroundServiceType 0x1 is not a
+             subset of 0x0". Confined to withNetwork (only this flavor downloads). -->
+        <service
+            android:name="androidx.work.impl.foreground.SystemForegroundService"
+            android:foregroundServiceType="dataSync"
+            tools:node="merge" />
+    </application>
+</manifest>

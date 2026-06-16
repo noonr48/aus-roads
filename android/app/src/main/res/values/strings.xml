@@ -1,0 +1,239 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="app_name">aus-roads</string>
+
+    <!-- Navigation -->
+    <string name="nav_map">Map</string>
+    <string name="nav_pins">Pins</string>
+    <string name="nav_settings">Settings</string>
+
+    <!-- Map screen -->
+    <string name="map_no_pack">No map pack installed</string>
+    <string name="map_no_pack_hint">Open Settings to download the South Australia map pack.</string>
+    <string name="map_osm_attribution">© OpenStreetMap contributors</string>
+
+    <!-- Pins screen -->
+    <string name="pins_empty">No pins yet. Long-press the map to drop a pin.</string>
+    <string name="pins_title">Saved pins</string>
+    <string name="pin_add">Add pin</string>
+    <string name="pin_delete">Delete</string>
+    <string name="pin_name_label">Name</string>
+    <string name="pin_latitude_label">Latitude</string>
+    <string name="pin_longitude_label">Longitude</string>
+    <string name="pin_add_confirm">Add</string>
+    <string name="pin_rename_confirm">Rename</string>
+    <string name="pin_edit_title">Edit pin</string>
+    <string name="pin_color_label">Color</string>
+    <string name="cancel">Cancel</string>
+    <string name="pin_dropped_default">Dropped pin</string>
+    <string name="pin_edit">Edit pin %s</string>
+    <string name="select_color">Select color</string>
+    <string name="route_history_select">Select route to %s</string>
+
+    <!-- Settings screen -->
+    <string name="settings_title">Settings</string>
+    <string name="settings_theme">Theme</string>
+    <string name="settings_theme_system">System default</string>
+    <string name="settings_theme_light">Light</string>
+    <string name="settings_theme_dark">Dark</string>
+    <string name="settings_traffic_overlay">Live traffic overlay</string>
+    <string name="settings_traffic_hint">Show roadworks, incidents and closures on the map</string>
+    <string name="settings_tts">Text-to-speech alerts</string>
+    <string name="settings_tts_hint">Read navigation instructions aloud</string>
+    <string name="settings_congestion_overlay">Congestion overlay</string>
+    <string name="settings_congestion_hint">Show traffic congestion colors on roads</string>
+    <string name="settings_api_keys">Traffic API keys</string>
+    <string name="settings_api_keys_hint">Optional. Required for NSW and VIC live traffic data. Free registration at the government open data portals.</string>
+    <string name="settings_nsw_api_key">NSW API key</string>
+    <string name="settings_nsw_api_key_placeholder">From opendata.transport.nsw.gov.au</string>
+    <string name="settings_vic_api_key">VIC API key</string>
+    <string name="settings_vic_api_key_placeholder">From opendata.transport.vic.gov.au</string>
+    <string name="settings_show_attribution">Attribution overlay</string>
+    <string name="settings_map_pack">Map pack</string>
+    <string name="settings_map_pack_installed">Installed</string>
+    <string name="settings_map_pack_none">Not installed</string>
+    <string name="settings_redownload">Re-download map</string>
+    <string name="settings_about">About</string>
+    <string name="settings_view_attribution">View full attribution</string>
+
+    <!-- About -->
+    <string name="about_title">About aus-roads</string>
+    <string name="about_back">Back</string>
+    <string name="about_section_app">App</string>
+    <string name="about_app_license">aus-roads v0.1.0\nCopyright © 2026 benbi.\nLicensed under the GNU Affero General Public License v3.0 or later (AGPL-3.0-or-later).\nSee the project repository for the full license text.</string>
+    <string name="about_section_data">Map data</string>
+    <string name="about_section_traffic">Live traffic (planned)</string>
+    <string name="about_section_libraries">Libraries</string>
+    <string name="about_section_privacy">Privacy</string>
+    <string name="about_osm_attribution">© OpenStreetMap contributors. Map data is licensed under the Open Database License (ODbL).</string>
+    <string name="about_odbl_notice">OpenStreetMap data is © OpenStreetMap contributors and licensed under the Open Database License (ODbL) 1.0. Any derived database (e.g. the aus-roads map pack) must carry this attribution visibly. See https://www.openstreetmap.org/copyright for full terms.</string>
+    <string name="about_privacy_posture">This app makes no network requests after the first-time map pack download. No analytics. No ads. No accounts. No background location.</string>
+    <string name="about_privacy_full">v0.1 ships offline-only. The AndroidManifest declares no INTERNET and no location permissions. Cloud backup and device-to-device transfer are both disabled. There is no analytics SDK, no crash reporter, no Google Play Services dependency, and no foreground service. The privacy posture is documented in the project repository under docs/notes/privacy.md and reflected in this in-app privacy section.</string>
+
+    <!-- About: data sources -->
+    <string name="about_osm_name">OpenStreetMap</string>
+    <string name="about_osm_license">ODbL-1.0</string>
+    <string name="about_osm_note">Base map data. © OpenStreetMap contributors.</string>
+    <string name="about_geofabrik_name">Geofabrik</string>
+    <string name="about_geofabrik_license">ODbL-1.0</string>
+    <string name="about_geofabrik_note">Pre-clipped state extract provider.</string>
+    <string name="about_openmaptiles_name">OpenMapTiles</string>
+    <string name="about_openmaptiles_license">CC-BY 4.0</string>
+    <string name="about_openmaptiles_note">Vector tile schema v3.15. © OpenMapTiles, © OpenStreetMap contributors.</string>
+    <string name="about_traffic_sa_name">Traffic SA (planned v0.2)</string>
+    <string name="about_traffic_sa_license">CC-BY 4.0 (DPTI)</string>
+    <string name="about_traffic_sa_note">Roadworks, incidents, closures, detours. © Government of South Australia.</string>
+    <string name="about_dit_name">DIT Outback Road Warnings (planned v0.3)</string>
+    <string name="about_dit_license">CC-BY 3.0 AU</string>
+    <string name="about_dit_note">Outback road conditions, closures, restrictions, 4WD-only status. © DIT.</string>
+
+    <!-- About: libraries -->
+    <string name="about_lib_maplibre_name">MapLibre Native Android SDK</string>
+    <string name="about_lib_maplibre_license">BSD-2-Clause</string>
+    <string name="about_lib_maplibre_note">Vector tile renderer.</string>
+    <string name="about_lib_valhalla_name">Valhalla (via Rallista/valhalla-mobile, v0.4+)</string>
+    <string name="about_lib_valhalla_license">MIT</string>
+    <string name="about_lib_valhalla_note">Offline routing engine.</string>
+    <string name="about_lib_compose_name">Jetpack Compose, AndroidX, Material 3</string>
+    <string name="about_lib_compose_license">Apache-2.0</string>
+    <string name="about_lib_compose_note">UI framework and design system.</string>
+    <string name="about_lib_kotlin_name">Kotlin &amp; kotlinx.coroutines</string>
+    <string name="about_lib_kotlin_license">Apache-2.0</string>
+    <string name="about_lib_kotlin_note">Language + concurrency.</string>
+    <string name="about_lib_ktor_name">Ktor Client (v0.2+ pack downloader)</string>
+    <string name="about_lib_ktor_license">Apache-2.0</string>
+    <string name="about_lib_ktor_note">HTTP client for manifest + pack downloads.</string>
+    <string name="about_lib_serialization_name">kotlinx.serialization (v0.2+ pack downloader)</string>
+    <string name="about_lib_serialization_license">Apache-2.0</string>
+    <string name="about_lib_serialization_note">Manifest JSON parser.</string>
+    <string name="about_lib_room_name">Room (v0.1.1 pin store + pack metadata)</string>
+    <string name="about_lib_room_license">Apache-2.0</string>
+    <string name="about_lib_room_note">Local persistence.</string>
+    <string name="about_lib_datastore_name">DataStore (v0.1.1 settings)</string>
+    <string name="about_lib_datastore_license">Apache-2.0</string>
+    <string name="about_lib_datastore_note">Typed key/value preferences.</string>
+    <string name="about_lib_hilt_name">Hilt (v0.1.1 DI)</string>
+    <string name="about_lib_hilt_license">Apache-2.0</string>
+    <string name="about_lib_hilt_note">Dependency injection.</string>
+
+    <!-- Map feature kinds -->
+    <string name="feature_poi">Point of interest</string>
+    <string name="feature_road">Road</string>
+    <string name="feature_place">Place</string>
+
+    <!-- Route -->
+    <string name="route_directions">Directions</string>
+    <string name="route_close">Close</string>
+    <string name="route_failed">Routing failed</string>
+    <string name="route_network_error">Network error</string>
+    <string name="route_not_found">No route found. Your destination may be outside the downloaded map area.</string>
+    <string name="route_engine_unavailable">Directions aren\'t available yet. Install the SA map pack with routing to enable turn-by-turn directions.</string>
+    <string name="route_start_navigation">Start Navigation</string>
+    <string name="route_add_waypoint">Add waypoint</string>
+    <string name="route_waypoint_hint">Add a waypoint</string>
+    <string name="route_options_title">Route options</string>
+    <string name="route_avoid_tolls">Avoid tolls</string>
+    <string name="route_avoid_unsealed">Avoid unsealed roads</string>
+    <string name="route_avoid_ferries">Avoid ferries</string>
+
+    <!-- Traffic event sheet -->
+    <string name="traffic_road">Road: %s</string>
+    <string name="traffic_suburb">Suburb: %s</string>
+    <string name="traffic_speed_limit">Speed limit: %s km/h</string>
+    <string name="traffic_started">Started: %s</string>
+    <string name="traffic_ends">Ends: %s</string>
+    <string name="traffic_type_roadworks">Roadworks</string>
+    <string name="traffic_type_incident">Incident</string>
+    <string name="traffic_type_closure">Road Closure</string>
+    <string name="traffic_type_detour">Detour</string>
+    <string name="traffic_type_event">Event</string>
+    <string name="traffic_type_outback">Outback Warning</string>
+    <string name="traffic_type_unknown">Unknown</string>
+
+    <!-- Download / map pack -->
+    <string name="download_checking">Checking for updates…</string>
+    <string name="download_downloading">Downloading… %1$s / %2$s</string>
+    <string name="download_verifying">Verifying…</string>
+    <string name="download_extracting">Extracting…</string>
+    <string name="download_installing">Installing…</string>
+    <string name="download_version_info">Version: %1$s · %2$s</string>
+    <string name="download_map_pack">Download map pack</string>
+    <string name="download_already_up_to_date">Already up to date</string>
+    <string name="download_check_failed">Failed to check for updates: %s</string>
+    <string name="download_failed_not_found">No map pack is available to download yet.</string>
+    <string name="download_failed_unreachable">Couldn\'t reach the download server. Check your connection and try again.</string>
+    <string name="download_failed_invalid">The map pack information was invalid. Please try again later.</string>
+    <string name="download_failed_checksum">The downloaded map pack was corrupt. Please try again.</string>
+    <string name="download_unavailable_in_build">Map-pack downloads aren\'t available in this build.</string>
+    <string name="download_failed_generic">Download failed: %s</string>
+    <string name="settings_map_pack_download_unavailable">Map-pack downloads are available in the standard build.</string>
+
+    <!-- Map coverage banner -->
+    <string name="map_demo_pack_banner">Demo map · Adelaide area only</string>
+
+    <!-- Route display -->
+    <string name="route_distance_km">%.1f km</string>
+    <string name="route_duration_min">%.0f min</string>
+    <string name="route_distance_duration">%1$.1f km · %2$.0f min</string>
+
+    <!-- Route history -->
+    <string name="route_history_title">Recent routes</string>
+    <string name="route_history_empty">No recent routes</string>
+    <string name="route_history_from">From: %s</string>
+
+    <!-- Congestion legend -->
+    <string name="congestion_legend_title">Traffic</string>
+
+    <!-- Map screen extras -->
+    <string name="map_history_button">History</string>
+    <string name="map_my_location">My location</string>
+    <string name="map_locating">Locating…</string>
+    <string name="map_location_unavailable">Location unavailable — check that location is turned on.</string>
+    <string name="map_drop_pin_title">Drop a pin here</string>
+    <string name="map_pin_saved">Saved “%s”</string>
+    <string name="map_pin_deleted">Deleted “%s”</string>
+    <string name="action_save">Save</string>
+    <string name="action_undo">Undo</string>
+    <string name="route_computing">Routing…</string>
+
+    <!-- Pin default name -->
+    <string name="pin_default_name">Pin (%1$.4f, %2$.4f)</string>
+
+    <!-- Widget -->
+    <string name="widget_traffic_error">Traffic: error</string>
+    <string name="widget_no_pack">No map pack</string>
+    <string name="widget_traffic_events">Traffic: %d events</string>
+    <string name="widget_traffic_loading">Traffic: loading…</string>
+    <string name="widget_pack_version">Pack v%s</string>
+    <string name="widget_no_pack_installed">No pack installed</string>
+    <string name="widget_tap_to_open">Tap to open map</string>
+
+    <!-- Nearby feature -->
+    <string name="nav_nearby">Nearby</string>
+    <string name="nearby_title">Nearby</string>
+    <string name="nearby_coordinates">This location</string>
+    <string name="nearby_coordinate_decimal">Decimal</string>
+    <string name="nearby_coordinate_dms">DMS</string>
+    <string name="nearby_coordinate_mgrs">MGRS</string>
+    <string name="nearby_share_location">Share location</string>
+    <string name="nearby_view_on_map">View on map</string>
+    <string name="nearby_no_results">No %1$s found nearby</string>
+    <string name="nearby_nearest_hospital">Nearest hospital</string>
+    <string name="nearby_nearest_police">Nearest police</string>
+    <string name="nearby_emergency_title">Emergency</string>
+    <string name="nearby_categories_title">Find nearby</string>
+    <string name="nearby_results_title">Results</string>
+    <string name="nearby_distance_meters">%1$.0f m</string>
+    <string name="nearby_distance_km">%1$.1f km</string>
+    <!-- Category labels -->
+    <string name="nearby_cat_fuel">Fuel</string>
+    <string name="nearby_cat_ev">EV charging</string>
+    <string name="nearby_cat_hospital">Hospital</string>
+    <string name="nearby_cat_pharmacy">Pharmacy</string>
+    <string name="nearby_cat_police">Police</string>
+    <string name="nearby_cat_fire">Fire station</string>
+    <string name="nearby_cat_toilets">Toilets</string>
+    <string name="nearby_cat_water">Drinking water</string>
+    <string name="nearby_cat_camping">Camping</string>
+    <string name="nearby_cat_supermarket">Supermarket</string>
+</resources>

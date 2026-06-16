@@ -1,0 +1,14 @@
+#
+# aus-roads release signing example.
+# Copy this file to ~/.gradle/signing.properties or to android/signing.properties
+# and fill in the real values. NEVER commit the real file to git.
+#
+# Generate a keystore with:
+#   keytool -genkey -v -keystore aus-roads-release.keystore \
+#           -alias aus-roads -keyalg RSA -keysize 2048 -validity 9125
+#
+
+storeFile=/absolute/path/to/aus-roads-release.keystore
+storePassword=CHANGEME-storepass
+keyAlias=aus-roads
+keyPassword=CHANGEME-keypass

@@ -1,0 +1,7 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="download_missing_url">Missing pack URL</string>
+    <string name="download_missing_version">Missing pack version</string>
+    <string name="download_notification_title">Downloading map pack</string>
+    <string name="download_notification_text">Preparing download…</string>
+</resources>

@@ -1,0 +1,17 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="nav_stop">Stop Navigation</string>
+    <string name="nav_maneuver_progress">%1$d of %2$d</string>
+    <string name="nav_start">Start Navigation</string>
+    <string name="nav_continue">Continue</string>
+    <string name="nav_end">End</string>
+    <string name="nav_arrived">You have arrived</string>
+    <string name="nav_done">Done</string>
+    <string name="nav_battery_warning">Battery low — consider stopping navigation</string>
+    <string name="nav_speed_limit_label">Speed limit</string>
+    <string name="nav_recalculating">Off route — recalculating…</string>
+    <string name="nav_recalculating_tts">Off route. Recalculating.</string>
+    <string name="nav_recalculated_tts">Route recalculated.</string>
+    <string name="nav_recalc_failed_tts">Recalculation failed. Please stop and re-route.</string>
+    <string name="nav_arrived_tts">You have arrived at your destination</string>
+</resources>

@@ -1,0 +1,25 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  Placeholder launcher foreground. Replace with a real adaptive icon vector
+  in v0.1.1. This is a simple "road" silhouette so the APK builds and
+  installs cleanly in v0.1.
+-->
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="108dp"
+    android:height="108dp"
+    android:viewportWidth="108"
+    android:viewportHeight="108">
+    <!-- safe zone is 66x66 centered on 54,54 -->
+    <path
+        android:fillColor="#FFFFFFFF"
+        android:pathData="M44,28 L64,28 L62,40 L46,40 Z" />
+    <path
+        android:fillColor="#FFFFFFFF"
+        android:pathData="M46,42 L62,42 L60,54 L48,54 Z" />
+    <path
+        android:fillColor="#FFFFFFFF"
+        android:pathData="M48,56 L60,56 L58,68 L50,68 Z" />
+    <path
+        android:fillColor="#FFFFFFFF"
+        android:pathData="M50,70 L58,70 L56,82 L52,82 Z" />
+</vector>

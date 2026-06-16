@@ -1,0 +1,163 @@
+{
+  "version": 8,
+  "name": "aus-roads-adelaide-test",
+  "metadata": {
+    "au.com.ausroads:bounds": "138.55,-35.00,138.70,-34.85",
+    "au.com.ausroads:center": "138.62,-34.92,11",
+    "au.com.ausroads:minzoom": 0,
+    "au.com.ausroads:maxzoom": 14,
+    "au.com.ausroads:attribution": "© OpenStreetMap contributors • © OpenMapTiles"
+  },
+  "sources": {
+    "aus-roads-tiles": {
+      "type": "vector",
+      "url": "asset://maptile/adelaide-test-tiles.mbtiles"
+    }
+  },
+  "sprite": "",
+  "glyphs": "asset://glyphs/{fontstack}/{range}.pbf",
+  "layers": [
+    {
+      "id": "background",
+      "type": "background",
+      "paint": { "background-color": "#f5f5f0" }
+    },
+    {
+      "id": "landuse-park",
+      "type": "fill",
+      "source": "aus-roads-tiles",
+      "source-layer": "park",
+      "paint": { "fill-color": "#d8e8c8", "fill-opacity": 0.7 }
+    },
+    {
+      "id": "water",
+      "type": "fill",
+      "source": "aus-roads-tiles",
+      "source-layer": "water",
+      "paint": { "fill-color": "#a5cde2" }
+    },
+    {
+      "id": "waterway",
+      "type": "line",
+      "source": "aus-roads-tiles",
+      "source-layer": "waterway",
+      "paint": { "line-color": "#a5cde2", "line-width": 1 }
+    },
+    {
+      "id": "landcover-wood",
+      "type": "fill",
+      "source": "aus-roads-tiles",
+      "source-layer": "landcover",
+      "filter": ["==", "class", "wood"],
+      "paint": { "fill-color": "#d4e4c4", "fill-opacity": 0.6 }
+    },
+    {
+      "id": "building",
+      "type": "fill",
+      "source": "aus-roads-tiles",
+      "source-layer": "building",
+      "paint": { "fill-color": "#d9d5cc", "fill-opacity": 0.7 }
+    },
+    {
+      "id": "road-minor",
+      "type": "line",
+      "source": "aus-roads-tiles",
+      "source-layer": "transportation",
+      "filter": ["in", "class", "minor", "service", "track"],
+      "minzoom": 10,
+      "paint": {
+        "line-color": "#ffffff",
+        "line-width": ["interpolate", ["linear"], ["zoom"], 10, 0.5, 14, 2]
+      }
+    },
+    {
+      "id": "road-secondary",
+      "type": "line",
+      "source": "aus-roads-tiles",
+      "source-layer": "transportation",
+      "filter": ["in", "class", "secondary", "tertiary"],
+      "paint": {
+        "line-color": "#ffffff",
+        "line-width": ["interpolate", ["linear"], ["zoom"], 8, 0.5, 14, 4]
+      }
+    },
+    {
+      "id": "road-primary",
+      "type": "line",
+      "source": "aus-roads-tiles",
+      "source-layer": "transportation",
+      "filter": ["in", "class", "primary", "trunk"],
+      "paint": {
+        "line-color": "#ffd591",
+        "line-width": ["interpolate", ["linear"], ["zoom"], 6, 0.5, 14, 6]
+      }
+    },
+    {
+      "id": "road-motorway",
+      "type": "line",
+      "source": "aus-roads-tiles",
+      "source-layer": "transportation",
+      "filter": ["==", "class", "motorway"],
+      "paint": {
+        "line-color": "#f7c948",
+        "line-width": ["interpolate", ["linear"], ["zoom"], 5, 0.5, 14, 8]
+      }
+    },
+    {
+      "id": "road-label",
+      "type": "symbol",
+      "source": "aus-roads-tiles",
+      "source-layer": "transportation_name",
+      "minzoom": 11,
+      "layout": {
+        "symbol-placement": "line",
+        "text-field": ["coalesce", ["get", "name:en"], ["get", "name"]],
+        "text-font": ["Open Sans Regular"],
+        "text-size": ["interpolate", ["linear"], ["zoom"], 11, 10, 14, 13]
+      },
+      "paint": {
+        "text-color": "#1a3a52",
+        "text-halo-color": "#ffffff",
+        "text-halo-width": 1.5
+      }
+    },
+    {
+      "id": "place-suburb",
+      "type": "symbol",
+      "source": "aus-roads-tiles",
+      "source-layer": "place",
+      "filter": ["==", "class", "suburb"],
+      "minzoom": 9,
+      "layout": {
+        "text-field": ["coalesce", ["get", "name:en"], ["get", "name"]],
+        "text-font": ["Open Sans Regular"],
+        "text-size": ["interpolate", ["linear"], ["zoom"], 9, 10, 14, 14],
+        "text-transform": "uppercase"
+      },
+      "paint": {
+        "text-color": "#7a6f5d",
+        "text-halo-color": "#ffffff",
+        "text-halo-width": 1
+      }
+    },
+    {
+      "id": "poi",
+      "type": "symbol",
+      "source": "aus-roads-tiles",
+      "source-layer": "poi",
+      "minzoom": 14,
+      "layout": {
+        "text-field": ["coalesce", ["get", "name:en"], ["get", "name"]],
+        "text-font": ["Open Sans Regular"],
+        "text-size": 11,
+        "text-anchor": "top",
+        "text-offset": [0, 0.5]
+      },
+      "paint": {
+        "text-color": "#3b2f1d",
+        "text-halo-color": "#ffffff",
+        "text-halo-width": 1
+      }
+    }
+  ]
+}
