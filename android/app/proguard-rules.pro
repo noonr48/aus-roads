@@ -114,3 +114,13 @@
 -dontnote org.apache.http.**
 
 -dontwarn com.sun.xml.internal.ws.spi.db.*
+
+# --- Strip verbose/debug logging from minified (release) builds ---
+# Diagnostic logs that include user GPS coordinates and search-query text use
+# Log.d (LocationProviders / UserLocationOverlay / FtsSearchRepository); stripping
+# Log.d/Log.v keeps precise location + queries out of a shipped privacy-first
+# build's logcat. Operational Log.i/w/e (init, counts, failures) are retained.
+-assumenosideeffects class android.util.Log {
+    public static int d(...);
+    public static int v(...);
+}

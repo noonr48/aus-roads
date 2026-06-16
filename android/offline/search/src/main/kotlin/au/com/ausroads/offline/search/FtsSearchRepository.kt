@@ -2,6 +2,7 @@ package au.com.ausroads.offline.search
 
 import android.database.sqlite.SQLiteDatabase
 import android.database.sqlite.SQLiteException
+import android.util.Log
 import javax.inject.Inject
 import javax.inject.Singleton
 import kotlinx.coroutines.Dispatchers
@@ -14,7 +15,19 @@ class FtsSearchRepository @Inject constructor() : SearchRepository {
 
     override fun open(dbPath: String) {
         db?.close()
-        db = SQLiteDatabase.openDatabase(dbPath, null, SQLiteDatabase.OPEN_READONLY)
+        db = try {
+            SQLiteDatabase.openDatabase(dbPath, null, SQLiteDatabase.OPEN_READONLY).also { opened ->
+                val rows = runCatching {
+                    opened.rawQuery("SELECT count(*) FROM search_meta", null).use { c ->
+                        if (c.moveToFirst()) c.getLong(0) else -1L
+                    }
+                }.getOrDefault(-1L)
+                Log.i(TAG, "Opened search DB: $dbPath ($rows rows in search_meta)")
+            }
+        } catch (e: SQLiteException) {
+            Log.e(TAG, "Failed to open search DB: $dbPath", e)
+            null
+        }
     }
 
     override fun close() {
@@ -24,67 +37,51 @@ class FtsSearchRepository @Inject constructor() : SearchRepository {
 
     override suspend fun search(query: String, limit: Int, kind: String?): List<SearchResult> =
         withContext(Dispatchers.IO) {
-            val database = db ?: return@withContext emptyList()
-            if (query.isBlank()) return@withContext emptyList()
+            val database = db ?: run {
+                Log.w(TAG, "search skipped — no search DB open; returning empty")
+                return@withContext emptyList()
+            }
+            val tokens = query.trim().split("\\s+".toRegex()).filter { it.isNotBlank() }
+            if (tokens.isEmpty()) return@withContext emptyList()
 
-            val ftsQuery = toFtsMatchQuery(query)
-
-            val sql = if (kind != null) {
+            // Substring match per token against the plain search_meta table. The pack
+            // also carries an FTS5 index, but Android's system SQLite does NOT reliably
+            // ship the fts5 module (observed "no such module: fts5" on a GrapheneOS
+            // Pixel), so a MATCH query throws. LIKE over ~128k rows is comfortably fast
+            // for a debounced search box and works on every device; shorter names first.
+            val likeClauses = tokens.joinToString(" AND ") { "name LIKE ? ESCAPE '\\'" }
+            val kindClause = if (kind != null) " AND kind = ?" else ""
+            val sql =
                 """
-                SELECT s.name, s.kind, s.class, s.lat, s.lon
-                FROM search_index f
-                JOIN search_meta s ON f.rowid = s.id
-                WHERE f.search_index MATCH ?
-                  AND s.kind = ?
-                ORDER BY rank
+                SELECT name, kind, class, lat, lon
+                FROM search_meta
+                WHERE $likeClauses$kindClause
+                ORDER BY length(name), name
                 LIMIT ?
                 """.trimIndent()
-            } else {
-                """
-                SELECT s.name, s.kind, s.class, s.lat, s.lon
-                FROM search_index f
-                JOIN search_meta s ON f.rowid = s.id
-                WHERE f.search_index MATCH ?
-                ORDER BY rank
-                LIMIT ?
-                """.trimIndent()
-            }
+            val args = buildList {
+                tokens.forEach { add("%${escapeLike(it)}%") }
+                if (kind != null) add(kind)
+                add(limit.toString())
+            }.toTypedArray()
 
-            val cursor = if (kind != null) {
-                database.rawQuery(sql, arrayOf(ftsQuery, kind, limit.toString()))
-            } else {
-                database.rawQuery(sql, arrayOf(ftsQuery, limit.toString()))
+            val results = try {
+                database.rawQuery(sql, args).use { c -> c.toSearchResults() }
+            } catch (e: SQLiteException) {
+                Log.e(TAG, "search query failed", e)
+                emptyList()
             }
-
-            cursor.use { c ->
-                buildList {
-                    while (c.moveToNext()) {
-                        add(
-                            SearchResult(
-                                name = c.getString(0),
-                                kind = c.getString(1),
-                                className = c.getString(2),
-                                latitude = c.getDouble(3),
-                                longitude = c.getDouble(4),
-                            )
-                        )
-                    }
-                }
-            }
+            // Debug-only: contains the user's query text — stripped from release (proguard).
+            Log.d(TAG, "search('$query') [${tokens.size} token(s)] -> ${results.size} results")
+            results
         }
 
     /**
-     * Build a safe FTS5 MATCH expression from raw user input. Each whitespace
-     * token is wrapped in a quoted string (embedded quotes doubled) with a
-     * trailing `*` prefix match, so FTS5 operators (`"`, `(`, `*`, `:`, `^`,
-     * `-`, AND/OR/NOT/NEAR) in the query are treated as literals and can never
-     * produce a malformed MATCH that throws SQLiteException.
+     * Escape LIKE wildcards in user input so `%`, `_` and `\` match literally
+     * (paired with `ESCAPE '\'`) — e.g. a user typing `%` must not match everything.
      */
-    private fun toFtsMatchQuery(raw: String): String =
-        raw.trim()
-            .split("\\s+".toRegex())
-            .filter { it.isNotBlank() }
-            .joinToString(" ") { token -> "\"${token.replace("\"", "\"\"")}\"*" }
+    private fun escapeLike(s: String): String =
+        s.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
 
     override suspend fun nearest(
         latitude: Double,
@@ -267,4 +264,8 @@ class FtsSearchRepository @Inject constructor() : SearchRepository {
                 )
             }
         }
+
+    private companion object {
+        private const val TAG = "FtsSearchRepository"
+    }
 }

@@ -122,6 +122,31 @@ class PoiBrowseInstrumentedTest {
         assertThat(speed).isNull()
     }
 
+    @Test
+    fun search_matchesNameSubstringPerToken_andEscapesLikeWildcards() {
+        // search() runs over the plain search_meta table (the device SQLite has no
+        // fts5 module), matching each whitespace token as a case-insensitive
+        // substring of the name; shorter names rank first.
+        val path = buildDb(withRoadSpeed = false) { db ->
+            insertPoi(db, 1, "Adelaide", "place=city", ADELAIDE_LAT, ADELAIDE_LON)
+            insertPoi(db, 2, "North Adelaide", "place=suburb", ADELAIDE_LAT, ADELAIDE_LON)
+            insertPoi(db, 3, "Port Augusta", "place=town", ADELAIDE_LAT, ADELAIDE_LON)
+            insertPoi(db, 4, "100% Fun Park", "leisure=park", ADELAIDE_LAT, ADELAIDE_LON)
+        }
+        repo.open(path)
+
+        val adelaide = runBlocking { repo.search("adelaide", limit = 20, kind = null) }
+        assertThat(adelaide.map { it.name }).containsExactly("Adelaide", "North Adelaide")
+        assertThat(adelaide.first().name).isEqualTo("Adelaide") // shorter name first
+
+        val multi = runBlocking { repo.search("north adelaide", limit = 20, kind = null) }
+        assertThat(multi.map { it.name }).containsExactly("North Adelaide")
+
+        // A literal '%' must match literally (escapeLike), not act as a wildcard.
+        val percent = runBlocking { repo.search("%", limit = 20, kind = null) }
+        assertThat(percent.map { it.name }).containsExactly("100% Fun Park")
+    }
+
     /**
      * Create a fresh DB file in the app cache dir with the `search_meta` table
      * (and optionally `road_speed`), run [populate] against the open writable

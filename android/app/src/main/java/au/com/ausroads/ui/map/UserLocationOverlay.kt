@@ -1,6 +1,7 @@
 package au.com.ausroads.ui.map
 
 import android.graphics.Color
+import android.util.Log
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
@@ -19,6 +20,8 @@ private const val USER_DOT_LAYER = "user-location-dot"
 
 // One blue, reserved for "you" — distinct from saved-pin green and traffic hues.
 private const val USER_BLUE = "#1E88E5"
+
+private const val TAG = "UserLocationOverlay"
 
 /**
  * Renders the user's current position as a blue dot with a translucent halo and
@@ -41,11 +44,13 @@ fun UserLocationOverlay(
 
         if (lat == null || lon == null) {
             // No fix: clear the source so the dot disappears.
+            Log.i(TAG, "no location — clearing blue dot")
             style.getSourceAs<GeoJsonSource>(USER_SOURCE_ID)
                 ?.setGeoJson(FeatureCollection.fromFeatures(emptyList()))
             return@LaunchedEffect
         }
 
+        Log.d(TAG, "drawing blue dot at $lat,$lon")
         val collection = FeatureCollection.fromFeatures(
             listOf(Feature.fromGeometry(Point.fromLngLat(lon, lat))),
         )
