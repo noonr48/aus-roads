@@ -15,8 +15,8 @@
 # component only when its `format == "none"`. So:
 #   - tiles  -> real path/sha256/size, file IS in the zip
 #   - search -> real path/sha256/size, file IS in the zip
-#   - routing-> format:"none" (the 101 MB Valhalla tar is intentionally NOT shipped
-#               in this demo pack; see TODO below) so the verifier skips it.
+#   - routing-> real path/sha256/size + format:"valhalla" and the tar IS in the zip
+#               WHEN a Valhalla graph is available; else format:"none" (skipped).
 #
 # Idempotent: safe to re-run; it recomputes hashes from the live files every time
 # and overwrites the artifacts. Inputs are READ from dist/ (built by
@@ -28,10 +28,11 @@
 # Usage:
 #   tools/map-pack-builder/scripts/package-pack.sh
 #
-# TODO(routing): when the Valhalla routing tar is checksummed and small enough to
-#   ship (or hosted separately), flip routing.format back to "valhalla", add
-#   valhalla_tiles.tar to the zip at components.routing.path, and fill real
-#   sizeBytes/sha256. Until then routing stays format:"none" (verifier-skipped).
+# Routing: when a built Valhalla graph is present (valhalla-build/valhalla_tiles.tar,
+#   or an already-staged dist/routing/valhalla_tiles.tar) it is added to the zip at
+#   components.routing.path with real format:"valhalla"/sha256/size, so PackVerifier
+#   checks it and the app's RoutingInitializer loads it (reads the .tar directly via
+#   Valhalla tile_extract). With no tar present, routing stays format:"none".
 
 set -euo pipefail
 
@@ -61,14 +62,30 @@ for f in "$TILES_FILE" "$SEARCH_FILE"; do
 done
 
 # ---------------------------------------------------------------------------
-# Pack identity / region / bbox (kept in sync with build-adelaide-test-pack.sh)
+# Pack identity / region / bbox. The region bounds come from dist/manifest.json
+# (written by build-adelaide-test-pack.sh — the single source of the bbox); fall
+# back to the Adelaide test clip when no manifest is present.
 # ---------------------------------------------------------------------------
 
-ADELAIDE_BBOX="138.4,-35.2,139,-34.6"   # minLon,minLat,maxLon,maxLat
-BBOX_WEST="$(echo "$ADELAIDE_BBOX"  | awk -F, '{print $1}')"
-BBOX_SOUTH="$(echo "$ADELAIDE_BBOX" | awk -F, '{print $2}')"
-BBOX_EAST="$(echo "$ADELAIDE_BBOX"  | awk -F, '{print $3}')"
-BBOX_NORTH="$(echo "$ADELAIDE_BBOX" | awk -F, '{print $4}')"
+DEFAULT_BBOX="138.4,-35.2,139,-34.6"   # minLon,minLat,maxLon,maxLat (Adelaide test clip)
+BBOX_WEST=""; BBOX_SOUTH=""; BBOX_EAST=""; BBOX_NORTH=""
+if [[ -s "$DIST/manifest.json" ]]; then
+    BBOX_LINE="$(python3 -c 'import json,sys
+b=json.load(open(sys.argv[1]))["bbox"]
+print(b["west"], b["south"], b["east"], b["north"])' "$DIST/manifest.json" 2>/dev/null || true)"
+    if [[ -n "$BBOX_LINE" ]]; then
+        BBOX_WEST="$(echo "$BBOX_LINE"  | awk '{print $1}')"
+        BBOX_SOUTH="$(echo "$BBOX_LINE" | awk '{print $2}')"
+        BBOX_EAST="$(echo "$BBOX_LINE"  | awk '{print $3}')"
+        BBOX_NORTH="$(echo "$BBOX_LINE" | awk '{print $4}')"
+    fi
+fi
+if [[ -z "$BBOX_WEST" || -z "$BBOX_SOUTH" || -z "$BBOX_EAST" || -z "$BBOX_NORTH" ]]; then
+    BBOX_WEST="$(echo "$DEFAULT_BBOX"  | awk -F, '{print $1}')"
+    BBOX_SOUTH="$(echo "$DEFAULT_BBOX" | awk -F, '{print $2}')"
+    BBOX_EAST="$(echo "$DEFAULT_BBOX"  | awk -F, '{print $3}')"
+    BBOX_NORTH="$(echo "$DEFAULT_BBOX" | awk -F, '{print $4}')"
+fi
 
 # packVersion: reuse the value already in dist/manifest.json if present (so the
 # zip path matches a manifest produced earlier in the same build), else today (UTC).
@@ -95,10 +112,36 @@ TILES_SHA="$(sha256sum "$TILES_FILE" | cut -d' ' -f1)"
 TILES_SIZE="$(stat -c%s "$TILES_FILE")"
 SEARCH_SHA="$(sha256sum "$SEARCH_FILE" | cut -d' ' -f1)"
 SEARCH_SIZE="$(stat -c%s "$SEARCH_FILE")"
-TOTAL_SIZE=$(( TILES_SIZE + SEARCH_SIZE ))   # routing excluded while format=="none"
+
+# Routing: ship the Valhalla graph when one is built. Look in valhalla-build/ (where
+# build-valhalla-tiles.sh leaves the whole-SA graph) or an already-staged dist/routing/.
+# When present, stage it at the manifest path, add it to the zip, and emit a real
+# format/sha/size so PackVerifier checks it; otherwise routing stays "none".
+ROUTING_REL="routing/valhalla_tiles.tar"
+ROUTING_FORMAT="none"; ROUTING_PROFILE="none"; ROUTING_SIZE=0
+ROUTING_SHA="0000000000000000000000000000000000000000000000000000000000000000"
+ROUTING_SRC=""
+for cand in "$ROOT/valhalla-build/valhalla_tiles.tar" "$DIST/$ROUTING_REL"; do
+    [[ -s "$cand" ]] && ROUTING_SRC="$cand" && break
+done
+if [[ -n "$ROUTING_SRC" ]]; then
+    mkdir -p "$DIST/routing"
+    [[ "$ROUTING_SRC" -ef "$DIST/$ROUTING_REL" ]] || cp -f "$ROUTING_SRC" "$DIST/$ROUTING_REL"
+    ROUTING_FORMAT="valhalla"
+    ROUTING_PROFILE="auto"
+    ROUTING_SHA="$(sha256sum "$DIST/$ROUTING_REL" | cut -d' ' -f1)"
+    ROUTING_SIZE="$(stat -c%s "$DIST/$ROUTING_REL")"
+fi
+
+TOTAL_SIZE=$(( TILES_SIZE + SEARCH_SIZE + ROUTING_SIZE ))
 
 log "tiles : $TILES_PATH  size=$TILES_SIZE  sha256=$TILES_SHA"
 log "search: $SEARCH_PATH  size=$SEARCH_SIZE  sha256=$SEARCH_SHA"
+if [[ "$ROUTING_FORMAT" != "none" ]]; then
+    log "routing: $ROUTING_REL  size=$ROUTING_SIZE  sha256=$ROUTING_SHA"
+else
+    log "routing: none (no Valhalla tar found — shipping tiles+search only)"
+fi
 log "packVersion=$PACK_VERSION  totalSizeBytes=$TOTAL_SIZE"
 
 # ---------------------------------------------------------------------------
@@ -110,14 +153,19 @@ log "packVersion=$PACK_VERSION  totalSizeBytes=$TOTAL_SIZE"
 ZIP_OUT="$DIST/pack.zip"
 rm -f "$ZIP_OUT"
 
+# Archive members, each stored at its manifest `path`. Routing is included only when
+# a Valhalla tar was staged above (else the pack is tiles+search only).
+MEMBERS=( "$TILES_PATH" "$SEARCH_PATH" )
+[[ "$ROUTING_FORMAT" != "none" ]] && MEMBERS+=( "$ROUTING_REL" )
+
 if command -v zip >/dev/null 2>&1; then
-    log "using zip CLI to build pack.zip"
+    log "using zip CLI to build pack.zip (${MEMBERS[*]})"
     # -X strips extra file attributes (more deterministic); -j would junk paths, so
-    # we cd into dist/ and add by relative name to keep entries flat at the manifest paths.
-    ( cd "$DIST" && zip -X -q "$ZIP_OUT" "$TILES_PATH" "$SEARCH_PATH" )
+    # we cd into dist/ and add by relative name to keep entries at the manifest paths.
+    ( cd "$DIST" && zip -X -q "$ZIP_OUT" "${MEMBERS[@]}" )
 else
-    log "zip CLI not found -- building pack.zip via python3 zipfile"
-    python3 - "$ZIP_OUT" "$DIST" "$TILES_PATH" "$SEARCH_PATH" <<'PYZIP'
+    log "zip CLI not found -- building pack.zip via python3 zipfile (${MEMBERS[*]})"
+    python3 - "$ZIP_OUT" "$DIST" "${MEMBERS[@]}" <<'PYZIP'
 import sys, zipfile, os
 
 zip_out, dist = sys.argv[1], sys.argv[2]
@@ -189,11 +237,11 @@ cat > "$LATEST" <<EOF
       "sha256": "${TILES_SHA}"
     },
     "routing": {
-      "format": "none",
-      "profile": "none",
-      "path": "routing/valhalla_tiles.tar",
-      "sizeBytes": 0,
-      "sha256": "0000000000000000000000000000000000000000000000000000000000000000"
+      "format": "${ROUTING_FORMAT}",
+      "profile": "${ROUTING_PROFILE}",
+      "path": "${ROUTING_REL}",
+      "sizeBytes": ${ROUTING_SIZE},
+      "sha256": "${ROUTING_SHA}"
     },
     "search": {
       "format": "sqlite-fts5",
@@ -251,6 +299,7 @@ verify_one() {
 
 verify_one "$TILES_PATH"  "$TILES_SHA"  "$TILES_SIZE"  "tiles"
 verify_one "$SEARCH_PATH" "$SEARCH_SHA" "$SEARCH_SIZE" "search"
+[[ "$ROUTING_FORMAT" != "none" ]] && verify_one "$ROUTING_REL" "$ROUTING_SHA" "$ROUTING_SIZE" "routing"
 
 # Confirm the served paths resolve under dist/.
 [[ -s "$LATEST" ]]              && log "OK: dist/latest.json present"

@@ -37,10 +37,14 @@ DIST="$ROOT/dist"
 LOGS="$ROOT/logs"
 TODAY="$(date -u +%Y-%m-%d)"
 
-# Adelaide metropolitan bounds passed to Planetiler --bounds (minLon,minLat,maxLon,maxLat).
-# Covers the CBD + inland foothills (Magill) + the Gulf St Vincent coastline so the
-# coast/ocean rendering can be verified. ~55 km x 65 km.
-ADELAIDE_BBOX="138.4,-35.2,139,-34.6"
+# Region bounds passed to Planetiler --bounds (minLon,minLat,maxLon,maxLat).
+# Defaults to the Adelaide metro test clip (CBD + foothills + Gulf St Vincent
+# coast, ~55 km x 65 km). Override PACK_BBOX to build another region, e.g. full SA:
+#   PACK_BBOX="129,-38,141,-26"
+PACK_BBOX="${PACK_BBOX:-138.4,-35.2,139,-34.6}"
+# Planetiler max heap. The Adelaide clip is fine at 4g; the full-SA water-polygon
+# pass wants more — override e.g. PACK_HEAP=8g for the whole state.
+PACK_HEAP="${PACK_HEAP:-4g}"
 
 mkdir -p "$CACHE" "$DIST" "$LOGS"
 LOG="$LOGS/build-$TODAY.log"
@@ -159,18 +163,18 @@ SRC="$CACHE/data/sources"
 PL_TMP="${TMPDIR:-/tmp}/planetiler-adelaide-tmp"
 rm -rf "$PL_TMP"; mkdir -p "$PL_TMP"
 
-log "running planetiler (Adelaide metro, z0-z14)..."
+log "running planetiler (bounds=$PACK_BBOX, heap=$PACK_HEAP, z0-z14)..."
 # NOTE: the output-clipping flag is --bounds (minLon,minLat,maxLon,maxLat).
 # Planetiler has NO --bbox flag; passing --bbox is silently ignored and the
 # whole input extent is rendered. Use explicit source paths so resolution does
 # not depend on the current working directory.
-"$JAVA_BIN" -Xmx4g -jar "$PLANETILER_JAR" \
+"$JAVA_BIN" -Xmx"$PACK_HEAP" -jar "$PLANETILER_JAR" \
     --osm_path="$PBF" \
     --water_polygons_path="$SRC/water-polygons-split-3857.zip" \
     --lake_centerlines_path="$SRC/lake_centerline.shp.zip" \
     --natural_earth_path="$SRC/natural_earth_vector.sqlite.zip" \
     --tmpdir="$PL_TMP" \
-    --bounds="$ADELAIDE_BBOX" \
+    --bounds="$PACK_BBOX" \
     --download=false \
     --force \
     --output="$OUT_MBTILES" 2>&1 | tee "$LOG"
@@ -202,10 +206,10 @@ cat > "$DIST/manifest.json" <<EOF
     "state": "sa"
   },
   "bbox": {
-    "west": ${ADELAIDE_BBOX%%,*},
-    "south": ${ADELAIDE_BBOX#*,},
-    "east": $(echo "$ADELAIDE_BBOX" | awk -F, '{print $3}'),
-    "north": $(echo "$ADELAIDE_BBOX" | awk -F, '{print $4}')
+    "west": $(echo "$PACK_BBOX"  | awk -F, '{print $1}'),
+    "south": $(echo "$PACK_BBOX" | awk -F, '{print $2}'),
+    "east": $(echo "$PACK_BBOX"  | awk -F, '{print $3}'),
+    "north": $(echo "$PACK_BBOX" | awk -F, '{print $4}')
   },
   "generatedAt": "$(date -u +%Y-%m-%dT%H:%M:%SZ)",
   "osmSource": {
@@ -247,11 +251,17 @@ EOF
 log "wrote $DIST/manifest.json"
 
 # ---------------------------------------------------------------------------
-# 6. Build Valhalla routing tiles
+# 6. Build Valhalla routing tiles (reuse an existing whole-SA graph if present so
+#    a tiles-only rebuild doesn't pay the ~10 min Docker Valhalla build).
 # ---------------------------------------------------------------------------
 
-log "step 6: building Valhalla routing tiles..."
-bash "$HERE/build-valhalla-tiles.sh"
+VALHALLA_TAR="$ROOT/valhalla-build/valhalla_tiles.tar"
+if [[ -s "$VALHALLA_TAR" ]]; then
+    log "step 6: reusing existing Valhalla tar ($(du -h "$VALHALLA_TAR" | cut -f1)) -- delete it to force a rebuild"
+else
+    log "step 6: building Valhalla routing tiles..."
+    bash "$HERE/build-valhalla-tiles.sh"
+fi
 
 # ---------------------------------------------------------------------------
 # 7. Package the built components into a hostable/servable pack artifact.
