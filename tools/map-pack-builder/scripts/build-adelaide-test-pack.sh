@@ -2,24 +2,26 @@
 #
 # build-adelaide-test-pack.sh
 #
-# Produces a small (~20 MB) vector-tile test pack for the Adelaide metropolitan
-# area from OpenStreetMap data. Used to verify the aus-roads in-app map renderer
-# end-to-end without having to build the full 350-700 MB state pack.
+# Builds the vector tiles (Planetiler) for a region and packages
+# dist/pack.zip + dist/latest.json via package-pack.sh — including the search
+# index (dist/search.db, built by build-search-index.sh) and the Valhalla routing
+# graph (build-valhalla-tiles.sh) when those components are present in dist/.
 #
-# This is the v0.1.x test/development pipeline. The production pipeline for the
-# full SA pack lives at the same level under a sibling script and is run by
-# GitHub Actions weekly (see /home/benbi/Apps/aus-roads/docs/adr/0003-map-pack-format.md).
+# Region-parameterized by PACK_BBOX (default: the small Adelaide metro test clip
+# used to verify the renderer cheaply). Build the FULL South Australia pack with:
+#   PACK_BBOX="129,-38,141,-26" PACK_HEAP=8g ./scripts/build-adelaide-test-pack.sh
+# See /home/benbi/Apps/aus-roads/docs/adr/0003-map-pack-format.md for the format.
 #
 # Inputs:
 #   - Geofabrik south-australia-latest.osm.pbf (~62 MB)
 #   - Planetiler 0.8.4+ (Java JAR, auto-downloaded)
 #
-# Outputs (in dist/):
-#   - adelaide-test-tiles.mbtiles (~20 MB)
-#   - manifest.json
-#   - style.json
+# Outputs (in dist/, assembled by package-pack.sh):
+#   - pack.zip      (tiles + search + routing — the asset the app downloads)
+#   - latest.json   (the served manifest)
+#   - adelaide-test-tiles.mbtiles, manifest.json (intermediate build products)
 #
-# Usage:
+# Usage (default = Adelaide test clip; set PACK_BBOX for another region):
 #   tools/map-pack-builder/scripts/build-adelaide-test-pack.sh
 #
 # Approximate timings on a 16-core x86_64 box with 32 GB RAM:

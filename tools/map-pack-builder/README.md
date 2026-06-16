@@ -7,21 +7,29 @@ for the data layer that consumes the produced pack.
 
 ## What this directory produces
 
-Two pipelines live here:
+`dist/pack.zip` + `dist/latest.json` — the asset and manifest the aus-roads app
+downloads. The pack bundles vector tiles, a SQLite FTS5 search index, and
+(when a graph is present) a Valhalla routing graph.
 
-1. **`scripts/build-adelaide-test-pack.sh`** — produces a small (~20 MB) test
-   pack clipped to the Adelaide metropolitan bounding box. Used during v0.1.x
-   development to verify the in-app map renderer without the cost of building
-   the full state pack.
+`scripts/build-adelaide-test-pack.sh` is the region-parameterized entry point:
+it runs Planetiler for the tiles, reuses (or builds) the Valhalla routing graph,
+and calls `package-pack.sh` to assemble + self-verify the zip. The bbox is set
+by `PACK_BBOX`:
 
-2. (future) **`scripts/build-sa-pack.sh`** — produces the full South Australia
-   pack (~150-300 MB tiles + 150-250 MB valhalla routing tiles + 50-150 MB
-   SQLite FTS5 search index). Runs on a 16-core x86_64 box in ~30 min; targets
-   GitHub Actions weekly cron.
+- **Default — Adelaide test clip (~31 MB):**
+  ```bash
+  ./scripts/build-adelaide-test-pack.sh
+  ```
+- **Full South Australia (~155 MB):** whole-state tiles z0–14 + whole-SA search
+  + a 105 MB Valhalla routing graph:
+  ```bash
+  PACK_BBOX="129,-38,141,-26" PACK_HEAP=8g ./scripts/build-adelaide-test-pack.sh
+  ```
 
-The full state pipeline is deferred to v0.1.2 because it requires
-`valhalla_build_tiles` (native) and a custom SQLite FTS5 builder. For v0.1.x
-the test pack is sufficient to demo the renderer.
+Helper scripts: `build-search-index.sh` produces `dist/search.db` (packaged when
+present); `build-valhalla-tiles.sh` builds the routing graph via Docker;
+`package-pack.sh` assembles the zip and includes the routing tar with
+`routing.format:"valhalla"` whenever a graph is available, else `"none"`.
 
 ## Quickstart (test pack)
 
@@ -91,14 +99,10 @@ rm -rf cache dist
 
 ## Known limitations
 
-1. **No routing graph.** v0.1.x ships tiles only. Valhalla routing tiles are
-   a v0.4 concern.
-2. **No search index.** v0.1.x ships tiles only. SQLite FTS5 search is a
-   v0.1.1 concern.
-3. **OpenMapTiles demo profile.** The `--area=monaco` profile is verbose
-   (5+ layers for the same features). A custom 5-layer profile would halve
-   the MBTiles; deferred to v0.2 cleanup per ADR 0003.
-4. **No raster hillshade.** Vector-only. Hillshade is a v0.2 polish item.
+1. **OpenMapTiles demo profile.** The verbose default profile emits more layers
+   than the app uses; a custom slim profile would shrink the MBTiles — deferred
+   to v0.2 cleanup per ADR 0003.
+2. **No raster hillshade.** Vector-only. Hillshade is a v0.2 polish item.
 
 ## Tools required
 
