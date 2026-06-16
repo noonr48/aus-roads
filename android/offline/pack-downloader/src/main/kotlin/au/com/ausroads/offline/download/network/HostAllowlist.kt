@@ -7,9 +7,11 @@ import io.ktor.client.plugins.api.createClientPlugin
  * mirrors used for sideloaded manifests).
  */
 private val BASE_ALLOWED_HOSTS = setOf(
-    "cdn.aus-roads.example",
     "github.com",
     "raw.githubusercontent.com",
+    // GitHub Release asset downloads (anonymous pack hosting) 302-redirect to these.
+    "release-assets.githubusercontent.com",
+    "objects.githubusercontent.com",
 )
 
 /** Loopback hosts for the local demo server (debug builds point MAP_PACK_BASE_URL here). */

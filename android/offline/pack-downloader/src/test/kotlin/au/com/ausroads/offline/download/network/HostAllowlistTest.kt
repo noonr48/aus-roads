@@ -23,9 +23,10 @@ class HostAllowlistTest {
         }
 
     @Test
-    fun `allows an allowlisted production host`() = runTest {
-        // Must not throw.
-        client().get("https://cdn.aus-roads.example/latest.json")
+    fun `allows the GitHub pack-hosting hosts`() = runTest {
+        // Must not throw — GitHub release URL + its redirect target + raw.
+        client().get("https://github.com/noonr48/aus-roads/releases/download/sa-pack/latest.json")
+        client().get("https://release-assets.githubusercontent.com/x/y/pack.zip")
         client().get("https://raw.githubusercontent.com/x/y/pack.zip")
     }
 

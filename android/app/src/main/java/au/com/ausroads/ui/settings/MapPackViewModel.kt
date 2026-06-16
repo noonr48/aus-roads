@@ -41,7 +41,9 @@ class MapPackViewModel @Inject constructor(
             when (val result = mapPackManager.fetchLatestManifest()) {
                 is ManifestFetchResult.Fresh -> {
                     val manifest = result.manifest
-                    val packUrl = "$baseUrl/packs/${manifest.packVersion}/pack.zip"
+                    // Flat asset name — GitHub Release assets can't contain slashes,
+                    // and the local demo server mirrors this (<base>/pack.zip).
+                    val packUrl = "$baseUrl/pack.zip"
                     // Pass the canonical manifest JSON so the worker can verify the
                     // downloaded components against their declared hashes.
                     mapPackManager.startDownload(packUrl, manifest.packVersion, result.rawJson)

@@ -91,7 +91,7 @@ class MapPackViewModelTest {
         viewModel.onDownloadClick()
 
         assertThat(urlSlot.captured)
-            .isEqualTo("https://cdn.aus-roads.example/packs/2026-06-01/pack.zip")
+            .isEqualTo("https://cdn.aus-roads.example/pack.zip")
     }
 
     @Test

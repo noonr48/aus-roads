@@ -4,14 +4,26 @@ import au.com.ausroads.offline.pack.PackManifest
 import au.com.ausroads.offline.download.state.ManifestCacheEntry
 import au.com.ausroads.offline.download.state.ManifestFetchResult
 import io.ktor.client.HttpClient
-import io.ktor.client.call.body
 import io.ktor.client.request.get
 import io.ktor.client.request.header
 import io.ktor.client.statement.HttpResponse
+import io.ktor.client.statement.bodyAsText
 import io.ktor.http.HttpHeaders
 import io.ktor.http.HttpStatusCode
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
+import kotlinx.serialization.json.Json
+
+/**
+ * Lenient JSON for decoding the manifest body directly. The manifest is decoded
+ * from text (not via ContentNegotiation) so the parse does not depend on the
+ * server's Content-Type — GitHub Release assets are served as
+ * `application/octet-stream`, which ContentNegotiation refuses to JSON-decode.
+ */
+private val MANIFEST_JSON = Json {
+    ignoreUnknownKeys = true
+    isLenient = true
+}
 
 class ManifestFetcher(
     private val client: HttpClient,
@@ -44,12 +56,14 @@ class ManifestFetcher(
                 HttpStatusCode.NotModified -> ManifestFetchResult.Unchanged
 
                 HttpStatusCode.OK -> {
-                    val manifest: PackManifest = response.body()
+                    // Decode from text, NOT response.body<PackManifest>(): GitHub serves
+                    // release assets as application/octet-stream, which Ktor's
+                    // ContentNegotiation won't auto-deserialize. The cached rawJson is the
+                    // original manifest text the worker verifies against.
+                    val rawJson = response.bodyAsText()
+                    val manifest = MANIFEST_JSON.decodeFromString(PackManifest.serializer(), rawJson)
                     val etag = response.headers[HttpHeaders.ETag]
                     val lastModified = response.headers[HttpHeaders.LastModified]
-                    val rawJson = kotlinx.serialization.json.Json.encodeToString(
-                        PackManifest.serializer(), manifest
-                    )
 
                     manifestCache.write(
                         ManifestCacheEntry(
@@ -70,7 +84,12 @@ class ManifestFetcher(
                     ManifestFetchResult.FailureReason.UNREACHABLE
                 )
             }
-        } catch (_: Exception) {
+        } catch (e: Exception) {
+            android.util.Log.w(
+                "ManifestFetcher",
+                "manifest fetch failed: ${e.javaClass.simpleName}: ${e.message}",
+                e,
+            )
             ManifestFetchResult.Failed(ManifestFetchResult.FailureReason.UNREACHABLE)
         }
     }

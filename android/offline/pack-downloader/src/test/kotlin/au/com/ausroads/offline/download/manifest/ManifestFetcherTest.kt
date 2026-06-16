@@ -35,6 +35,7 @@ class ManifestFetcherTest {
         body: String = """{"schemaVersion":1,"packVersion":"test","region":{"country":"AU","state":"SA"},"bbox":{"west":138.0,"south":-35.0,"east":139.0,"north":-34.0},"generatedAt":"2026-01-01T00:00:00Z","osmSource":{"provider":"geofabrik","url":"https://example.com","osmExtractDate":"2026-01-01T00:00:00Z"},"license":"ODbL-1.0","minAppVersion":"1.0.0","minAndroidSdk":26,"components":{"tiles":{"format":"mbtiles","schema":"openmaptiles","minZoom":0,"maxZoom":14,"path":"tiles.mbtiles","sizeBytes":100,"sha256":"abc"},"routing":{"format":"none","profile":"none","path":"n/a","sizeBytes":0,"sha256":"none"},"search":{"format":"none","path":"n/a","sizeBytes":0,"sha256":"none"}},"totalSizeBytes":100,"signatures":{}}""",
         etag: String? = null,
         lastModified: String? = null,
+        contentType: String = "application/json",
     ) = HttpClient(MockEngine) {
         install(ContentNegotiation) {
             json(Json { ignoreUnknownKeys = true })
@@ -45,7 +46,7 @@ class ManifestFetcherTest {
                     content = body.toByteArray(),
                     status = status,
                     headers = headersOf(
-                        HttpHeaders.ContentType to listOf("application/json"),
+                        HttpHeaders.ContentType to listOf(contentType),
                         *listOfNotNull(
                             etag?.let { HttpHeaders.ETag to listOf(it) },
                             lastModified?.let { HttpHeaders.LastModified to listOf(it) },
@@ -63,6 +64,19 @@ class ManifestFetcherTest {
 
         val fetcher = ManifestFetcher(client, manifestCache, BASE_URL)
         val result = fetcher.fetch()
+
+        assertThat(result).isInstanceOf(ManifestFetchResult.Fresh::class.java)
+    }
+
+    @Test
+    fun `fetch parses a manifest served as octet-stream (GitHub Release assets)`() = runTest {
+        // GitHub serves release assets as application/octet-stream — Ktor's
+        // ContentNegotiation refuses to JSON-decode that, so the fetcher must decode
+        // the manifest from text. Regression guard for the production-hosting bug.
+        coEvery { manifestCache.read() } returns null
+        val client = makeClient(contentType = "application/octet-stream")
+
+        val result = ManifestFetcher(client, manifestCache, BASE_URL).fetch()
 
         assertThat(result).isInstanceOf(ManifestFetchResult.Fresh::class.java)
     }

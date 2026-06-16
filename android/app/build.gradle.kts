@@ -1,7 +1,6 @@
 // :app — the aus-roads Android application.
 // v0.1 is offline-only: no INTERNET permission, no location, no Google Play Services.
 
-import com.android.build.api.variant.BuildConfigField
 import java.util.Properties
 
 plugins {
@@ -97,10 +96,18 @@ android {
         }
         create("withNetwork") {
             dimension = "network"
-            // INTERNET declared in flavor-specific manifest source set.
-            // Base URL defaults to the production CDN (release); the debug build
-            // overrides it to the emulator host below (see androidComponents).
-            buildConfigField("String", "MAP_PACK_BASE_URL", "\"https://cdn.aus-roads.example\"")
+            // INTERNET declared in flavor-specific manifest source set. Packs are
+            // hosted as GitHub Release assets on the fixed `sa-pack` tag (anonymous
+            // download; the asset URL 302-redirects to release-assets.githubusercontent.com,
+            // which the HostAllowlist permits). The app fetches <base>/latest.json and
+            // <base>/pack.zip. To test a locally-built pack, temporarily point this at a
+            // local server (http://127.0.0.1:8080) — debug permits cleartext to loopback
+            // (src/debug/res/xml/network_security_config.xml) reached via `adb reverse`.
+            buildConfigField(
+                "String",
+                "MAP_PACK_BASE_URL",
+                "\"https://github.com/noonr48/aus-roads/releases/download/sa-pack\"",
+            )
             buildConfigField("Boolean", "CAN_DOWNLOAD_PACKS", "true")
         }
     }
@@ -135,21 +142,6 @@ android {
         ndk {
             abiFilters += listOf("arm64-v8a")
         }
-    }
-}
-
-// Per-variant override: only the withNetwork DEBUG build points at the local demo
-// server. This app's native libs are arm64-only, so it runs on a physical device
-// (not an x86_64 emulator) — testing uses `adb reverse tcp:8080 tcp:8080`, which maps
-// the device's 127.0.0.1:8080 to the host's pack server (tools/map-pack-builder/scripts/serve-pack.sh).
-// The flavor default (CDN) stays for withNetwork release; offline keeps its empty URL on
-// both build types so a flavor-wide buildType override can't accidentally re-enable it.
-androidComponents {
-    onVariants(selector().withFlavor("network" to "withNetwork").withBuildType("debug")) { variant ->
-        variant.buildConfigFields.put(
-            "MAP_PACK_BASE_URL",
-            BuildConfigField("String", "\"http://127.0.0.1:8080\"", "Local demo map-pack server (debug, via adb reverse)"),
-        )
     }
 }
 
