@@ -100,6 +100,41 @@ class MapPackViewModelTest {
         assertThat(viewModel.downloadError.value).isEqualTo("Verification failed: tiles")
     }
 
+    @Test
+    fun `onDownloadClick re-downloads on Unchanged when installed version differs`() = runTest {
+        // 304 Unchanged must still download when the installed pack is an older version
+        // — a download that failed after the manifest was cached stays retryable.
+        installedFlow.value = installedPack(version = "2026-05-31")
+        coEvery { mapPackManager.fetchLatestManifest() } returns
+            ManifestFetchResult.Unchanged(buildManifest(), "{}")
+
+        viewModel.onDownloadClick()
+
+        verify { mapPackManager.startDownload(any(), "2026-06-01", any()) }
+        assertThat(viewModel.uiState.value.error).isNull()
+    }
+
+    @Test
+    fun `onDownloadClick does not download on Unchanged when installed version matches`() = runTest {
+        installedFlow.value = installedPack(version = "2026-06-01")
+        coEvery { mapPackManager.fetchLatestManifest() } returns
+            ManifestFetchResult.Unchanged(buildManifest(), "{}")
+
+        viewModel.onDownloadClick()
+
+        verify(exactly = 0) { mapPackManager.startDownload(any(), any(), any()) }
+        assertThat(viewModel.uiState.value.error).isNotNull()
+    }
+
+    private fun installedPack(version: String) = InstalledPack(
+        version = version,
+        regionCode = "AU-SA",
+        installedAt = Instant.parse("2026-05-31T00:00:00Z"),
+        totalSizeBytes = 100L,
+        tilesPath = "tiles.mbtiles",
+        manifestSha256 = "abc",
+    )
+
     private fun buildManifest() = PackManifest(
         packVersion = "2026-06-01",
         region = Region.AU_SA,

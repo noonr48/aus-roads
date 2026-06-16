@@ -53,7 +53,19 @@ class ManifestFetcher(
             }
 
             when (response.status) {
-                HttpStatusCode.NotModified -> ManifestFetchResult.Unchanged
+                HttpStatusCode.NotModified -> {
+                    // 304: the cached manifest is still current. Surface it decoded so
+                    // the caller can compare its version to the installed pack and
+                    // re-download if they differ — "unchanged" is not "installed".
+                    val cachedJson = cached?.manifestJson
+                    if (cachedJson.isNullOrBlank()) {
+                        ManifestFetchResult.Failed(ManifestFetchResult.FailureReason.UNREACHABLE)
+                    } else {
+                        val cachedManifest =
+                            MANIFEST_JSON.decodeFromString(PackManifest.serializer(), cachedJson)
+                        ManifestFetchResult.Unchanged(cachedManifest, cachedJson)
+                    }
+                }
 
                 HttpStatusCode.OK -> {
                     // Decode from text, NOT response.body<PackManifest>(): GitHub serves

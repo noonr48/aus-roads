@@ -9,7 +9,16 @@ sealed interface ManifestFetchResult {
      * the install record's manifestSha256 is stable.
      */
     data class Fresh(val manifest: PackManifest, val rawJson: String) : ManifestFetchResult
-    data object Unchanged : ManifestFetchResult
+
+    /**
+     * The server reported the manifest unchanged (HTTP 304); [manifest]/[rawJson]
+     * are the still-current values from cache. Carried (not a bare object) so the
+     * caller can compare the latest version against what is installed and decide to
+     * re-download — an unchanged manifest is NOT proof the pack is installed (e.g. a
+     * download that failed after the manifest was cached must stay retryable).
+     */
+    data class Unchanged(val manifest: PackManifest, val rawJson: String) : ManifestFetchResult
+
     data class Failed(val reason: FailureReason) : ManifestFetchResult
 
     enum class FailureReason {

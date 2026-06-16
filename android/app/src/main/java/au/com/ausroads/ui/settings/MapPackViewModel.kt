@@ -8,6 +8,7 @@ import au.com.ausroads.offline.download.MapPackManager
 import au.com.ausroads.offline.download.state.DownloadProgress
 import au.com.ausroads.offline.download.state.InstalledPack
 import au.com.ausroads.offline.download.state.ManifestFetchResult
+import au.com.ausroads.offline.pack.PackManifest
 import dagger.hilt.android.lifecycle.HiltViewModel
 import dagger.hilt.android.qualifiers.ApplicationContext
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -39,25 +40,39 @@ class MapPackViewModel @Inject constructor(
         viewModelScope.launch {
             _uiState.update { it.copy(isChecking = true, error = null) }
             when (val result = mapPackManager.fetchLatestManifest()) {
-                is ManifestFetchResult.Fresh -> {
-                    val manifest = result.manifest
-                    // Flat asset name — GitHub Release assets can't contain slashes,
-                    // and the local demo server mirrors this (<base>/pack.zip).
-                    val packUrl = "$baseUrl/pack.zip"
-                    // Pass the canonical manifest JSON so the worker can verify the
-                    // downloaded components against their declared hashes.
-                    mapPackManager.startDownload(packUrl, manifest.packVersion, result.rawJson)
-                    _uiState.update { it.copy(isChecking = false) }
-                }
-                is ManifestFetchResult.Unchanged -> {
-                    val msg = context.getString(R.string.download_already_up_to_date)
-                    _uiState.update { it.copy(isChecking = false, error = msg) }
-                }
+                // Fresh (200) and Unchanged (304) both carry the latest manifest. The
+                // download decision compares its version to the INSTALLED pack, not the
+                // manifest's freshness, so a download that failed after the manifest was
+                // cached stays retryable.
+                is ManifestFetchResult.Fresh -> startDownloadIfOutdated(result.manifest, result.rawJson)
+                is ManifestFetchResult.Unchanged -> startDownloadIfOutdated(result.manifest, result.rawJson)
                 is ManifestFetchResult.Failed -> {
                     _uiState.update { it.copy(isChecking = false, error = friendlyFailure(result.reason)) }
                 }
             }
         }
+    }
+
+    /**
+     * Start a download only if the latest manifest's pack version differs from the
+     * installed pack. Comparing against the installed version (not the manifest's
+     * freshness) means a download that failed after the manifest was cached can be
+     * retried, while an already up-to-date pack is not needlessly re-fetched.
+     */
+    private fun startDownloadIfOutdated(manifest: PackManifest, rawJson: String) {
+        if (installed.value?.version == manifest.packVersion) {
+            _uiState.update {
+                it.copy(
+                    isChecking = false,
+                    error = context.getString(R.string.download_already_up_to_date),
+                )
+            }
+            return
+        }
+        // Flat asset name — GitHub Release assets can't contain slashes (<base>/pack.zip);
+        // rawJson is threaded so the worker verifies components against their hashes.
+        mapPackManager.startDownload("$baseUrl/pack.zip", manifest.packVersion, rawJson)
+        _uiState.update { it.copy(isChecking = false) }
     }
 
     fun onCancelClick() {

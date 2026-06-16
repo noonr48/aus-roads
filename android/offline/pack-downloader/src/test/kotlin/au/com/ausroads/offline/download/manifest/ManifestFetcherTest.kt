@@ -23,6 +23,7 @@ class ManifestFetcherTest {
 
     private companion object {
         const val BASE_URL = "https://cdn.aus-roads.example"
+        const val MANIFEST_BODY = """{"schemaVersion":1,"packVersion":"test","region":{"country":"AU","state":"SA"},"bbox":{"west":138.0,"south":-35.0,"east":139.0,"north":-34.0},"generatedAt":"2026-01-01T00:00:00Z","osmSource":{"provider":"geofabrik","url":"https://example.com","osmExtractDate":"2026-01-01T00:00:00Z"},"license":"ODbL-1.0","minAppVersion":"1.0.0","minAndroidSdk":26,"components":{"tiles":{"format":"mbtiles","schema":"openmaptiles","minZoom":0,"maxZoom":14,"path":"tiles.mbtiles","sizeBytes":100,"sha256":"abc"},"routing":{"format":"none","profile":"none","path":"n/a","sizeBytes":0,"sha256":"none"},"search":{"format":"none","path":"n/a","sizeBytes":0,"sha256":"none"}},"totalSizeBytes":100,"signatures":{}}"""
     }
 
     @Before
@@ -32,7 +33,7 @@ class ManifestFetcherTest {
 
     private fun makeClient(
         status: HttpStatusCode = HttpStatusCode.OK,
-        body: String = """{"schemaVersion":1,"packVersion":"test","region":{"country":"AU","state":"SA"},"bbox":{"west":138.0,"south":-35.0,"east":139.0,"north":-34.0},"generatedAt":"2026-01-01T00:00:00Z","osmSource":{"provider":"geofabrik","url":"https://example.com","osmExtractDate":"2026-01-01T00:00:00Z"},"license":"ODbL-1.0","minAppVersion":"1.0.0","minAndroidSdk":26,"components":{"tiles":{"format":"mbtiles","schema":"openmaptiles","minZoom":0,"maxZoom":14,"path":"tiles.mbtiles","sizeBytes":100,"sha256":"abc"},"routing":{"format":"none","profile":"none","path":"n/a","sizeBytes":0,"sha256":"none"},"search":{"format":"none","path":"n/a","sizeBytes":0,"sha256":"none"}},"totalSizeBytes":100,"signatures":{}}""",
+        body: String = MANIFEST_BODY,
         etag: String? = null,
         lastModified: String? = null,
         contentType: String = "application/json",
@@ -101,7 +102,7 @@ class ManifestFetcherTest {
         coEvery { manifestCache.read() } returns ManifestCacheEntry(
             etag = "\"cached-etag\"",
             lastModified = null,
-            manifestJson = "{}",
+            manifestJson = MANIFEST_BODY,
         )
         var receivedEtag: String? = null
         val client = HttpClient(MockEngine) {
@@ -123,7 +124,7 @@ class ManifestFetcherTest {
         val result = fetcher.fetch()
 
         assertThat(receivedEtag).isEqualTo("\"cached-etag\"")
-        assertThat(result).isEqualTo(ManifestFetchResult.Unchanged)
+        assertThat(result).isInstanceOf(ManifestFetchResult.Unchanged::class.java)
     }
 
     @Test
@@ -131,14 +132,14 @@ class ManifestFetcherTest {
         coEvery { manifestCache.read() } returns ManifestCacheEntry(
             etag = "\"etag\"",
             lastModified = null,
-            manifestJson = "{}",
+            manifestJson = MANIFEST_BODY,
         )
         val client = makeClient(status = HttpStatusCode.NotModified)
 
         val fetcher = ManifestFetcher(client, manifestCache, BASE_URL)
         val result = fetcher.fetch()
 
-        assertThat(result).isEqualTo(ManifestFetchResult.Unchanged)
+        assertThat(result).isInstanceOf(ManifestFetchResult.Unchanged::class.java)
     }
 
     @Test
