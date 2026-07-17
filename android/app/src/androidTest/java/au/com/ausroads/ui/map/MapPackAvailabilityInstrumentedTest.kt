@@ -31,10 +31,12 @@ class MapPackAvailabilityInstrumentedTest {
     @Test
     fun installedPackMbtiles_resolvesVersionedTilesFromCurrentJson() {
         val packDir = File(baseDir, "v$VERSION").apply { mkdirs() }
-        val tiles = File(packDir, "tiles.mbtiles").apply { writeBytes(byteArrayOf(1, 2, 3, 4)) }
+        val tiles = File(packDir, "tiles.mbtiles").apply {
+            writeBytes("SQLite format 3\u0000".toByteArray(Charsets.US_ASCII) + byteArrayOf(0))
+        }
         File(baseDir, "current.json").writeText(
             """{"version":"$VERSION","regionCode":"AU-SA","installedAt":"2026-06-01T00:00:00Z",""" +
-                """"totalSizeBytes":4,"tilesPath":"tiles.mbtiles","manifestSha256":""}""",
+                """"totalSizeBytes":17,"tilesPath":"tiles.mbtiles","manifestSha256":""}""",
         )
 
         val resolved = MapPackAvailability.installedPackMbtiles(context)

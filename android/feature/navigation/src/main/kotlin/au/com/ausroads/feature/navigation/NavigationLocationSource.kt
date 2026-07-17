@@ -19,11 +19,15 @@ data class NavigationLocation(
 /**
  * Live-position source for navigation. The real fused-location implementation is
  * provided per app flavor: the withNetwork flavor binds a Google Play Services
- * backed source, while the privacy-first offline flavor binds a no-op (it has no
- * location permission and links no Play Services, so navigation falls back to
- * route-simulated tracking there). Keeping this an interface holds Google Play
- * Services out of the navigation module and out of the offline build entirely.
+ * backed source, while the privacy-first offline flavor binds Android's native
+ * on-device location provider. Keeping this interface holds Google Play Services
+ * out of the offline build entirely.
  */
 interface NavigationLocationSource {
     fun locationUpdates(intervalMs: Long = 1000): Flow<NavigationLocation>
 }
+
+class NavigationLocationUnavailableException(
+    message: String,
+    cause: Throwable? = null,
+) : IllegalStateException(message, cause)

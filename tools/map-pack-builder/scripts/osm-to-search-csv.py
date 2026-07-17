@@ -29,7 +29,10 @@ PLACE_VALUES = frozenset(
         "quarter",
     }
 )
-POI_KEYS = frozenset({"amenity", "tourism", "shop", "leisure"})
+# Priority is deliberate and deterministic for multi-tagged features. A set made
+# the emitted category vary with Python hash order, which made pack builds differ.
+POI_KEYS = ("amenity", "tourism", "shop", "leisure")
+RELATION_AREA_KINDS = frozenset({"poi", "water", "park"})
 HIGHWAY_SKIP = frozenset(
     {
         "motorway_junction",
@@ -62,6 +65,83 @@ def way_centroid(way):
     if not lats:
         return None, None
     return sum(lats) / len(lats), sum(lons) / len(lons)
+
+
+def ring_centroid(ring):
+    """Return (lat, lon, absolute area) for a valid polygon ring."""
+    coordinates = []
+    for node_ref in ring:
+        location = node_ref.location
+        if location.valid():
+            coordinates.append((location.lon, location.lat))
+    if len(coordinates) < 3:
+        return None
+    if coordinates[0] != coordinates[-1]:
+        coordinates.append(coordinates[0])
+
+    # Shift to a local origin before the shoelace calculation. OSM building
+    # footprints are tiny relative to global longitude/latitude values; using
+    # raw coordinates needlessly loses precision when large products cancel.
+    origin_lon, origin_lat = coordinates[0]
+    local_coordinates = [
+        (lon - origin_lon, lat - origin_lat) for lon, lat in coordinates
+    ]
+    doubled_area = 0.0
+    weighted_lon = 0.0
+    weighted_lat = 0.0
+    for (lon_a, lat_a), (lon_b, lat_b) in zip(
+        local_coordinates, local_coordinates[1:]
+    ):
+        cross = lon_a * lat_b - lon_b * lat_a
+        doubled_area += cross
+        weighted_lon += (lon_a + lon_b) * cross
+        weighted_lat += (lat_a + lat_b) * cross
+    if abs(doubled_area) < 1e-15:
+        return None
+
+    return (
+        origin_lat + weighted_lat / (3.0 * doubled_area),
+        origin_lon + weighted_lon / (3.0 * doubled_area),
+        abs(doubled_area) / 2.0,
+    )
+
+
+def area_centroid(area):
+    """Return an area-weighted centroid for a relation multipolygon."""
+    weighted_lat = 0.0
+    weighted_lon = 0.0
+    total_area = 0.0
+    fallback_locations = []
+
+    for outer_ring in area.outer_rings():
+        for node_ref in outer_ring:
+            location = node_ref.location
+            if location.valid():
+                fallback_locations.append((location.lat, location.lon))
+
+        outer = ring_centroid(outer_ring)
+        if outer is not None:
+            lat, lon, ring_area = outer
+            weighted_lat += lat * ring_area
+            weighted_lon += lon * ring_area
+            total_area += ring_area
+
+        for inner_ring in area.inner_rings(outer_ring):
+            inner = ring_centroid(inner_ring)
+            if inner is not None:
+                lat, lon, ring_area = inner
+                weighted_lat -= lat * ring_area
+                weighted_lon -= lon * ring_area
+                total_area -= ring_area
+
+    if total_area > 1e-15:
+        return weighted_lat / total_area, weighted_lon / total_area
+    if fallback_locations:
+        return (
+            sum(lat for lat, _ in fallback_locations) / len(fallback_locations),
+            sum(lon for _, lon in fallback_locations) / len(fallback_locations),
+        )
+    return None, None
 
 
 def classify(tags):
@@ -145,36 +225,28 @@ class FeatureExtractor(osmium.SimpleHandler):
             )
             self.counts[kind] += 1
 
-    def relation(self, r):
-        tags = dict(r.tags)
-        if tags.get("natural") == "water" or tags.get("leisure") == "park":
-            name = tags.get("name", "").strip()
-            if not name:
-                return
-            kind = "water" if tags.get("natural") == "water" else "park"
-            cls = "water" if kind == "water" else "park"
-            lat, lon = self._relation_centroid(r)
-            if lat is None:
-                return
-            if not in_bbox(lat, lon, self.bbox):
-                return
-            self.writer.writerow([name, kind, cls, f"{lat:.7f}", f"{lon:.7f}"])
+    def area(self, area):
+        # Closed ways are already emitted by way(). Restrict this callback to
+        # relation-derived areas so adding multipolygon POIs cannot duplicate them.
+        if area.from_way():
+            return
+        tags = dict(area.tags)
+        for kind, klass in classify(tags):
+            if kind not in RELATION_AREA_KINDS:
+                continue
+            lat, lon = area_centroid(area)
+            if lat is None or not in_bbox(lat, lon, self.bbox):
+                continue
+            self.writer.writerow(
+                [
+                    tags.get("name", ""),
+                    kind,
+                    klass,
+                    f"{lat:.7f}",
+                    f"{lon:.7f}",
+                ]
+            )
             self.counts[kind] += 1
-
-    def _relation_centroid(self, rel):
-        lats, lons = [], []
-        for member in rel.members:
-            if member.type == "w":
-                try:
-                    loc = member.location
-                    if loc.valid():
-                        lats.append(loc.lat)
-                        lons.append(loc.lon)
-                except Exception:
-                    pass
-        if not lats:
-            return None, None
-        return sum(lats) / len(lats), sum(lons) / len(lons)
 
 
 def main():

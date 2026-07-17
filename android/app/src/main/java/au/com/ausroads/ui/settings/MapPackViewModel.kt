@@ -4,6 +4,7 @@ import android.content.Context
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import au.com.ausroads.R
+import au.com.ausroads.di.PackRuntimeCoordinator
 import au.com.ausroads.offline.download.MapPackManager
 import au.com.ausroads.offline.download.state.DownloadProgress
 import au.com.ausroads.offline.download.state.InstalledPack
@@ -23,11 +24,15 @@ import javax.inject.Named
 class MapPackViewModel @Inject constructor(
     @ApplicationContext private val context: Context,
     private val mapPackManager: MapPackManager,
+    packRuntimeCoordinator: PackRuntimeCoordinator,
     /** Pack CDN base URL from BuildConfig — single source for the zip URL too. */
     @Named("mapPackBaseUrl") private val baseUrl: String,
 ) : ViewModel() {
 
     val installed: StateFlow<InstalledPack?> = mapPackManager.installed
+    val installedStateInitialized: StateFlow<Boolean> = mapPackManager.installedStateInitialized
+    val renderInstalled: StateFlow<InstalledPack?> = packRuntimeCoordinator.activePack
+    val renderStateInitialized: StateFlow<Boolean> = packRuntimeCoordinator.initialized
     val inFlight: StateFlow<DownloadProgress?> = mapPackManager.inFlight
 
     /** Error from the most recent FAILED download worker run (verify/extract/etc.). */
@@ -40,12 +45,11 @@ class MapPackViewModel @Inject constructor(
         viewModelScope.launch {
             _uiState.update { it.copy(isChecking = true, error = null) }
             when (val result = mapPackManager.fetchLatestManifest()) {
-                // Fresh (200) and Unchanged (304) both carry the latest manifest. The
-                // download decision compares its version to the INSTALLED pack, not the
-                // manifest's freshness, so a download that failed after the manifest was
-                // cached stays retryable.
-                is ManifestFetchResult.Fresh -> startDownloadIfOutdated(result.manifest, result.rawJson)
-                is ManifestFetchResult.Unchanged -> startDownloadIfOutdated(result.manifest, result.rawJson)
+                // This action is also the explicit repair/re-download control.
+                // A 304 still carries the cached manifest and must be allowed to
+                // replace a damaged pack even when the version is unchanged.
+                is ManifestFetchResult.Fresh -> startDownload(result.manifest, result.rawJson)
+                is ManifestFetchResult.Unchanged -> startDownload(result.manifest, result.rawJson)
                 is ManifestFetchResult.Failed -> {
                     _uiState.update { it.copy(isChecking = false, error = friendlyFailure(result.reason)) }
                 }
@@ -54,21 +58,11 @@ class MapPackViewModel @Inject constructor(
     }
 
     /**
-     * Start a download only if the latest manifest's pack version differs from the
-     * installed pack. Comparing against the installed version (not the manifest's
-     * freshness) means a download that failed after the manifest was cached can be
-     * retried, while an already up-to-date pack is not needlessly re-fetched.
+     * Start or explicitly repair the latest pack. The settings control says
+     * "Re-download map" when a pack exists, so same-version replacement is an
+     * intentional user action rather than an "already up to date" no-op.
      */
-    private fun startDownloadIfOutdated(manifest: PackManifest, rawJson: String) {
-        if (installed.value?.version == manifest.packVersion) {
-            _uiState.update {
-                it.copy(
-                    isChecking = false,
-                    error = context.getString(R.string.download_already_up_to_date),
-                )
-            }
-            return
-        }
+    private fun startDownload(manifest: PackManifest, rawJson: String) {
         // Flat asset name — GitHub Release assets can't contain slashes (<base>/pack.zip);
         // rawJson is threaded so the worker verifies components against their hashes.
         mapPackManager.startDownload("$baseUrl/pack.zip", manifest.packVersion, rawJson)

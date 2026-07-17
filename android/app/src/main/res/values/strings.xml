@@ -61,6 +61,7 @@
     <string name="about_back">Back</string>
     <string name="about_section_app">App</string>
     <string name="about_app_license">aus-roads v0.1.0\nCopyright © 2026 benbi.\nLicensed under the GNU Affero General Public License v3.0 or later (AGPL-3.0-or-later).\nSee the project repository for the full license text.</string>
+    <string name="about_build_identity">Installed build: %1$s · %2$s</string>
     <string name="about_section_data">Map data</string>
     <string name="about_section_traffic">Live traffic (planned)</string>
     <string name="about_section_libraries">Libraries</string>
@@ -68,7 +69,7 @@
     <string name="about_osm_attribution">© OpenStreetMap contributors. Map data is licensed under the Open Database License (ODbL).</string>
     <string name="about_odbl_notice">OpenStreetMap data is © OpenStreetMap contributors and licensed under the Open Database License (ODbL) 1.0. Any derived database (e.g. the aus-roads map pack) must carry this attribution visibly. See https://www.openstreetmap.org/copyright for full terms.</string>
     <string name="about_privacy_posture">This app makes no network requests after the first-time map pack download. No analytics. No ads. No accounts. No background location.</string>
-    <string name="about_privacy_full">v0.1 ships offline-only. The AndroidManifest declares no INTERNET and no location permissions. Cloud backup and device-to-device transfer are both disabled. There is no analytics SDK, no crash reporter, no Google Play Services dependency, and no foreground service. The privacy posture is documented in the project repository under docs/notes/privacy.md and reflected in this in-app privacy section.</string>
+    <string name="about_privacy_full">Core maps, search, pins, nearby places, and routing work on-device. Foreground location is requested only when you use a location feature; approximate access is accepted, fixes are not persisted, and no background location permission is declared. The offline build uses Android’s local GPS service with no INTERNET permission or Google Play Services. Cloud backup and device-to-device transfer are disabled. There is no analytics SDK, crash reporter, ad SDK, or account.</string>
 
     <!-- About: data sources -->
     <string name="about_osm_name">OpenStreetMap</string>
@@ -120,6 +121,7 @@
     <string name="feature_poi">Point of interest</string>
     <string name="feature_road">Road</string>
     <string name="feature_place">Place</string>
+    <string name="feature_search_result">Search result</string>
 
     <!-- Route -->
     <string name="route_directions">Directions</string>
@@ -129,6 +131,10 @@
     <string name="route_not_found">No route found. Your destination may be outside the downloaded map area.</string>
     <string name="route_engine_unavailable">Directions aren\'t available yet. Install the SA map pack with routing to enable turn-by-turn directions.</string>
     <string name="route_start_navigation">Start Navigation</string>
+    <string name="route_enable_precise_location">Enable precise location</string>
+    <string name="route_open_location_settings">Open location settings</string>
+    <string name="route_precise_location_explanation">Map browsing works with approximate location, but live turn-by-turn directions need precise location.</string>
+    <string name="route_precise_location_settings_explanation">Precise location is blocked. Open the app’s system settings to enable live turn-by-turn directions.</string>
     <string name="route_add_waypoint">Add waypoint</string>
     <string name="route_waypoint_hint">Add a waypoint</string>
     <string name="route_options_title">Route options</string>
@@ -189,8 +195,15 @@
     <string name="map_my_location">My location</string>
     <string name="map_locating">Locating…</string>
     <string name="map_location_unavailable">Location unavailable — check that location is turned on.</string>
+    <string name="map_location_permission_settings">Location permission is blocked. Enable it in the app’s system settings.</string>
+    <string name="map_route_origin_unavailable">Directions need a starting point away from the destination. Move the map or enable location, then try again.</string>
+    <string name="map_loading">Loading offline map…</string>
+    <string name="map_load_failed">The offline map could not load. Check or reinstall the map pack.</string>
+    <string name="map_manage_pack">Manage map pack</string>
+    <string name="map_hold_to_pin">Hold anywhere on the map to drop a pin</string>
     <string name="map_drop_pin_title">Drop a pin here</string>
     <string name="map_pin_saved">Saved “%s”</string>
+    <string name="map_pin_save_failed">Couldn’t save this pin. Please try again.</string>
     <string name="map_pin_deleted">Deleted “%s”</string>
     <string name="action_save">Save</string>
     <string name="action_undo">Undo</string>
@@ -212,12 +225,20 @@
     <string name="nav_nearby">Nearby</string>
     <string name="nearby_title">Nearby</string>
     <string name="nearby_coordinates">This location</string>
+    <string name="nearby_using_device_location">Using your device location</string>
+    <string name="nearby_waiting_for_location">Waiting for a device location fix · showing Adelaide CBD for now</string>
+    <string name="nearby_using_adelaide_fallback">Using Adelaide CBD until you share your location</string>
+    <string name="nearby_use_my_location">Use my location</string>
+    <string name="nearby_refresh_location">Refresh my location</string>
+    <string name="nearby_open_location_settings">Open location settings</string>
+    <string name="nearby_location_permission_settings">Location permission is blocked; enable it in system settings.</string>
     <string name="nearby_coordinate_decimal">Decimal</string>
     <string name="nearby_coordinate_dms">DMS</string>
     <string name="nearby_coordinate_mgrs">MGRS</string>
     <string name="nearby_share_location">Share location</string>
     <string name="nearby_view_on_map">View on map</string>
     <string name="nearby_no_results">No %1$s found nearby</string>
+    <string name="nearby_search_unavailable">Nearby data is still preparing. If this persists, re-download the map pack and try again.</string>
     <string name="nearby_nearest_hospital">Nearest hospital</string>
     <string name="nearby_nearest_police">Nearest police</string>
     <string name="nearby_emergency_title">Emergency</string>

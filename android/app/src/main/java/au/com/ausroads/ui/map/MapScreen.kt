@@ -18,12 +18,8 @@
 
 package au.com.ausroads.ui.map
 
-import android.Manifest
 import android.content.ComponentCallbacks2
 import android.content.Context
-import android.content.pm.PackageManager
-import androidx.activity.compose.rememberLauncherForActivityResult
-import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
@@ -66,6 +62,7 @@ import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.key
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
@@ -75,8 +72,9 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.hapticfeedback.HapticFeedbackType
 import androidx.compose.ui.platform.LocalContext
-import androidx.core.content.ContextCompat
+import androidx.compose.ui.platform.LocalHapticFeedback
 import androidx.lifecycle.compose.LocalLifecycleOwner
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.text.font.FontWeight
@@ -84,32 +82,47 @@ import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.compose.ui.viewinterop.AndroidView
+import androidx.compose.ui.zIndex
 import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.LifecycleEventObserver
 import au.com.ausroads.R
+import au.com.ausroads.core.geo.MeasureGeometry
 import au.com.ausroads.core.model.GeoPoint
 import au.com.ausroads.data.pins.Pin
+import au.com.ausroads.io.isExpectedSqliteDatabase
+import au.com.ausroads.offline.search.SearchResult
+import au.com.ausroads.offline.download.state.InstalledPack
+import au.com.ausroads.offline.download.state.installDirectoryName
 import au.com.ausroads.routing.engine.RouteOptions
 import au.com.ausroads.traffic.provider.LiveTrafficEvent
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.withContext
 import org.maplibre.android.MapLibre
 import org.maplibre.android.camera.CameraPosition
 import org.maplibre.android.geometry.LatLng
 import org.maplibre.android.maps.MapLibreMap
+import org.maplibre.android.maps.MapLibreMapOptions
 import org.maplibre.android.maps.MapView
 import org.maplibre.android.maps.Style
 import java.io.File
 
 private const val STYLE_ASSET = "maptile/style.json"
 private const val MBTILES_ASSET = "maptile/adelaide-test-tiles.mbtiles"
+private const val MBTILES_HASH_ASSET = "$MBTILES_ASSET.sha256"
 private const val MBTILES_FILENAME = "adelaide-test-tiles.mbtiles"
+private const val BUNDLED_PACK_IDENTITY = "bundled"
 
 private val AdelaideCbd = LatLng(-34.92, 138.62)
-private const val ADELAIDE_ZOOM = 11.0
+// The bundled vector data first contains POIs at z14, so the demo opens at a
+// useful neighbourhood scale instead of a city-wide view with no visible shops.
+private const val ADELAIDE_ZOOM = 14.0
 // Allow zooming in past the tile maxzoom (overzoom) so POI labels (style minzoom
 // 14) are tappable across a usable street-level range, not just a 14.0-14.5 sliver.
 private const val MAX_ZOOM = 16.0
 private const val MIN_ZOOM = 3.0
+private const val MIN_ROUTE_ORIGIN_DISTANCE_METERS = 5.0
 
 /**
  * Copies the bundled MBTiles from assets to filesDir if not already present,
@@ -119,8 +132,8 @@ private const val MIN_ZOOM = 3.0
  * (it uses `stat()` internally). Android assets are inside the APK and
  * don't have real paths, so we must copy to filesDir first.
  */
-private fun ensureMbtilesAndStyle(context: Context): String {
-    val mbtilesPath = resolveMbtilesPath(context)
+private fun ensureMbtilesAndStyle(context: Context, installedPack: InstalledPack?): String {
+    val mbtilesPath = resolveMbtilesPath(context, installedPack)
     android.util.Log.i("MapScreen", "Rendering tiles from $mbtilesPath")
     val styleJson = context.assets.open(STYLE_ASSET).bufferedReader().readText()
     return styleJson.replace(
@@ -136,12 +149,28 @@ private fun ensureMbtilesAndStyle(context: Context): String {
  * The style and glyphs are always loaded from assets — only the tile source is
  * repointed.
  */
-private fun resolveMbtilesPath(context: Context): String {
-    MapPackAvailability.installedPackMbtiles(context)?.let { return it.absolutePath }
+private fun resolveMbtilesPath(context: Context, installedPack: InstalledPack?): String {
+    if (installedPack != null) {
+        return checkNotNull(MapPackAvailability.installedPackMbtiles(context, installedPack)) {
+            "Activated map pack tiles are missing or invalid"
+        }.absolutePath
+    }
     val outFile = File(context.filesDir, MBTILES_FILENAME)
-    if (!outFile.exists()) {
+    val expectedHash = context.assets.open(MBTILES_HASH_ASSET).bufferedReader().use { reader ->
+        reader.readText().trim().substringBefore(' ')
+    }
+    if (!isExpectedSqliteDatabase(outFile, expectedHash)) {
+        val temporary = File(context.filesDir, "$MBTILES_FILENAME.tmp")
+        temporary.delete()
         context.assets.open(MBTILES_ASSET).use { input ->
-            outFile.outputStream().use { output -> input.copyTo(output) }
+            temporary.outputStream().use { output -> input.copyTo(output) }
+        }
+        check(isExpectedSqliteDatabase(temporary, expectedHash)) {
+            "Bundled MBTiles failed its SQLite/checksum contract"
+        }
+        if (!temporary.renameTo(outFile)) {
+            temporary.copyTo(outFile, overwrite = true)
+            temporary.delete()
         }
     }
     return outFile.absolutePath
@@ -157,6 +186,8 @@ private fun resolveMbtilesPath(context: Context): String {
 private data class IdentifyLayer(val id: String, val kindRes: Int, val sourceLayer: String)
 
 private val IDENTIFY_LAYERS = listOf(
+    IdentifyLayer("poi-shop-dot", R.string.feature_poi, "poi"),
+    IdentifyLayer("poi-dot", R.string.feature_poi, "poi"),
     IdentifyLayer("poi", R.string.feature_poi, "poi"),
     IdentifyLayer("road-label", R.string.feature_road, "transportation_name"),
     IdentifyLayer("place-suburb", R.string.feature_place, "place"),
@@ -167,7 +198,8 @@ private val IDENTIFY_LAYERS = listOf(
 fun MapScreen(
     onOpenSettings: () -> Unit,
     pins: List<Pin> = emptyList(),
-    onSavePin: (Double, Double, String, String, (Pin) -> Unit) -> Unit = { _, _, _, _, _ -> },
+    onSavePin: (Double, Double, String, String, (Pin) -> Unit, (Throwable) -> Unit) -> Unit =
+        { _, _, _, _, _, _ -> },
     onDeletePin: (Pin) -> Unit = {},
     reverseGeocode: suspend (Double, Double) -> String? = { _, _ -> null },
     showAttribution: Boolean = true,
@@ -179,10 +211,30 @@ fun MapScreen(
     routeViewModel: RouteViewModel? = null,
     routeAvoidOptions: RouteOptions = RouteOptions(),
     onRouteAvoidOptionsChange: (RouteOptions) -> Unit = {},
+    activePack: InstalledPack? = null,
+    packStateInitialized: Boolean = false,
+    requestedMapTarget: SearchResult? = null,
+    onRequestedMapTargetConsumed: () -> Unit = {},
     modifier: Modifier = Modifier,
 ) {
     val context = LocalContext.current
-    val hasPack = remember(context) { MapPackAvailability.hasAnyPack(context) }
+    val initialInstalledPack = remember(context) { MapPackAvailability.installedPack(context) }
+    val renderInstalledPack = runtimeInstalledPack(
+        initialPack = initialInstalledPack,
+        activePack = activePack,
+        packStateInitialized = packStateInitialized,
+    )
+    val initialPackIdentity = initialInstalledPack?.runtimeIdentity() ?: BUNDLED_PACK_IDENTITY
+    val effectivePackIdentity = mapPackRenderIdentity(
+        initialPackIdentity = initialPackIdentity,
+        activePackIdentity = activePack?.runtimeIdentity(),
+        packStateInitialized = packStateInitialized,
+    )
+    val hasPack = remember(context, effectivePackIdentity) {
+        renderInstalledPack?.let { MapPackAvailability.installedPackMbtiles(context, it) != null }
+            ?: MapPackAvailability.hasBundledPack(context)
+    }
+    val usingBundledFallback = renderInstalledPack == null
 
     if (!hasPack) {
         NoMapPackPlaceholder(
@@ -192,30 +244,66 @@ fun MapScreen(
         return
     }
 
-    MapScreenContent(
-        pins = pins,
-        onSavePin = onSavePin,
-        onDeletePin = onDeletePin,
-        reverseGeocode = reverseGeocode,
-        showAttribution = showAttribution,
-        searchViewModel = searchViewModel,
-        trafficViewModel = trafficViewModel,
-        trafficEnabled = trafficEnabled,
-        navigationViewModel = navigationViewModel,
-        routeHistoryViewModel = routeHistoryViewModel,
-        routeViewModel = routeViewModel,
-        routeAvoidOptions = routeAvoidOptions,
-        onRouteAvoidOptionsChange = onRouteAvoidOptionsChange,
-        modifier = modifier,
-    )
+    // Recreate MapLibre when the downloader promotes a new current pack. Search
+    // and routing already reopened on this event; keying the map keeps all three
+    // consumers on the same installed version without requiring an app restart.
+    key(effectivePackIdentity) {
+        MapScreenContent(
+            onOpenSettings = onOpenSettings,
+            pins = pins,
+            onSavePin = onSavePin,
+            onDeletePin = onDeletePin,
+            reverseGeocode = reverseGeocode,
+            showAttribution = showAttribution,
+            searchViewModel = searchViewModel,
+            trafficViewModel = trafficViewModel,
+            trafficEnabled = trafficEnabled,
+            navigationViewModel = navigationViewModel,
+            routeHistoryViewModel = routeHistoryViewModel,
+            routeViewModel = routeViewModel,
+            routeAvoidOptions = routeAvoidOptions,
+            onRouteAvoidOptionsChange = onRouteAvoidOptionsChange,
+            requestedMapTarget = requestedMapTarget,
+            onRequestedMapTargetConsumed = onRequestedMapTargetConsumed,
+            installedPack = renderInstalledPack,
+            usingBundledFallback = usingBundledFallback,
+            modifier = modifier,
+        )
+    }
 }
+
+/**
+ * Preserve the synchronous disk identity while MapPackManager reconciles, then
+ * trust its settled state. In particular, settled `null` means a stale
+ * current.json was removed and the bundled map must replace the placeholder.
+ */
+internal fun mapPackRenderIdentity(
+    initialPackIdentity: String,
+    activePackIdentity: String?,
+    packStateInitialized: Boolean,
+): String = if (packStateInitialized) {
+    activePackIdentity ?: BUNDLED_PACK_IDENTITY
+} else {
+    initialPackIdentity
+}
+
+/** Once reconciliation settles, only the successfully activated descriptor may render. */
+internal fun runtimeInstalledPack(
+    initialPack: InstalledPack?,
+    activePack: InstalledPack?,
+    packStateInitialized: Boolean,
+): InstalledPack? = if (packStateInitialized) activePack else initialPack
+
+private fun InstalledPack.runtimeIdentity(): String =
+    "$version:$installedAt:${installDirectoryName()}"
 
 @Suppress("LongParameterList", "LongMethod", "CyclomaticComplexMethod")
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 private fun MapScreenContent(
+    onOpenSettings: () -> Unit,
     pins: List<Pin>,
-    onSavePin: (Double, Double, String, String, (Pin) -> Unit) -> Unit,
+    onSavePin: (Double, Double, String, String, (Pin) -> Unit, (Throwable) -> Unit) -> Unit,
     onDeletePin: (Pin) -> Unit,
     reverseGeocode: suspend (Double, Double) -> String?,
     showAttribution: Boolean,
@@ -227,12 +315,18 @@ private fun MapScreenContent(
     routeViewModel: RouteViewModel?,
     routeAvoidOptions: RouteOptions,
     onRouteAvoidOptionsChange: (RouteOptions) -> Unit,
+    requestedMapTarget: SearchResult?,
+    onRequestedMapTargetConsumed: () -> Unit,
+    installedPack: InstalledPack?,
+    usingBundledFallback: Boolean,
     modifier: Modifier = Modifier,
 ) {
     val lifecycleOwner = LocalLifecycleOwner.current
     val context = LocalContext.current
+    val hapticFeedback = LocalHapticFeedback.current
     val scope = rememberCoroutineScope()
     val snackbarHostState = remember { SnackbarHostState() }
+    val recenterRequestOwner = remember { RecenterRequestOwner() }
 
     // Start traffic polling when enabled
     LaunchedEffect(trafficEnabled) {
@@ -248,53 +342,64 @@ private fun MapScreenContent(
         emptyList()
     }
 
-    var mapView by remember { mutableStateOf<MapView?>(null) }
     var mapLibreMap by remember { mutableStateOf<MapLibreMap?>(null) }
     var selectedFeature by remember { mutableStateOf<IdentifiedFeature?>(null) }
     var selectedTrafficEvent by remember { mutableStateOf<LiveTrafficEvent?>(null) }
     var selectedPin by remember { mutableStateOf<Pin?>(null) }
+    var selectedSearchResult by remember { mutableStateOf<SearchResult?>(null) }
+    var routeOriginBeforeResultFocus by remember { mutableStateOf<GeoPoint?>(null) }
+    var routeOriginCapturePending by remember { mutableStateOf(false) }
     var pendingDrop by remember { mutableStateOf<LatLng?>(null) }
     var showRouteHistory by remember { mutableStateOf(false) }
+    var mapLoadState by remember { mutableStateOf<MapLoadState>(MapLoadState.Loading) }
+    var recenterWhenPermissionGranted by remember { mutableStateOf(false) }
+    var didInitialLocationFocus by remember { mutableStateOf(requestedMapTarget != null) }
+    var hasUsedLongPress by remember { mutableStateOf(false) }
 
     // Location permission + live fix (drives the blue dot and the My Location FAB).
-    // The `offline` flavor strips location from the manifest by design, so the whole
-    // feature is hidden there rather than offering a dead button.
-    val locationAvailable = remember(context) { isLocationFeatureDeclared(context) }
-    var hasLocationPermission by remember {
-        mutableStateOf(
-            locationAvailable &&
-                ContextCompat.checkSelfPermission(context, Manifest.permission.ACCESS_FINE_LOCATION)
-                == PackageManager.PERMISSION_GRANTED,
-        )
-    }
-    val userLocation = rememberUserLocation(hasLocationPermission)
+    val locationPermission = rememberForegroundLocationPermissionState(context)
+    val userLocation = rememberUserLocation(locationPermission.isGranted)
 
     val recenter: () -> Unit = {
-        recenterOnUser(
-            map = mapLibreMap,
-            context = context,
-            cached = userLocation.value,
-            scope = scope,
-            snackbarHostState = snackbarHostState,
-            locatingMessage = context.getString(R.string.map_locating),
-            unavailableMessage = context.getString(R.string.map_location_unavailable),
-        )
-    }
-    val permissionLauncher = rememberLauncherForActivityResult(
-        ActivityResultContracts.RequestPermission(),
-    ) { granted ->
-        hasLocationPermission = granted
-        if (granted) recenter()
+        recenterRequestOwner.replace {
+            recenterOnUser(
+                map = mapLibreMap,
+                context = context,
+                cached = userLocation.value,
+                scope = scope,
+                snackbarHostState = snackbarHostState,
+                locatingMessage = context.getString(R.string.map_locating),
+                unavailableMessage = context.getString(R.string.map_location_unavailable),
+            )
+        }
     }
     val onMyLocation: () -> Unit = {
-        if (hasLocationPermission) recenter()
-        else permissionLauncher.launch(Manifest.permission.ACCESS_FINE_LOCATION)
+        if (locationPermission.isGranted) recenter()
+        else {
+            if (locationPermission.foregroundNeedsSettings) {
+                scope.launch {
+                    snackbarHostState.showSnackbar(
+                        context.getString(R.string.map_location_permission_settings),
+                    )
+                }
+            }
+            recenterWhenPermissionGranted = true
+            locationPermission.request()
+        }
+    }
+    LaunchedEffect(locationPermission.isGranted, recenterWhenPermissionGranted) {
+        if (locationPermission.isGranted && recenterWhenPermissionGranted) {
+            recenterWhenPermissionGranted = false
+            recenter()
+        }
     }
 
     // Keep the click listener reading the *current* traffic/pin lists without
     // re-registering listeners on every poll (which previously leaked + duplicated).
     val currentTrafficEvents = rememberUpdatedState(trafficEvents)
     val currentPins = rememberUpdatedState(pins)
+    val currentSelectedSearchResult = rememberUpdatedState(selectedSearchResult)
+    val currentHapticFeedback = rememberUpdatedState(hapticFeedback)
 
     val routeHistoryRoutes = routeHistoryViewModel?.recentRoutes?.collectAsState()?.value
 
@@ -310,43 +415,153 @@ private fun MapScreenContent(
         }
     }
 
-    // Start directions to a coordinate, preferring the live GPS fix as the origin
-    // and falling back to the current map centre when no fix is available.
+    // Start directions to a coordinate. A focused search/Nearby result has already
+    // moved the camera onto the destination, so preserve the camera position from
+    // before that animation as the no-GPS fallback.
     val startDirectionsTo: (Double, Double) -> Unit = startDirections@{ lat, lon ->
         val vm = routeViewModel ?: return@startDirections
-        val originLat = userLocation.value?.latitude ?: mapLibreMap?.cameraPosition?.target?.latitude
-        val originLon = userLocation.value?.longitude ?: mapLibreMap?.cameraPosition?.target?.longitude
-        if (originLat != null && originLon != null) {
-            vm.setOrigin(GeoPoint(longitude = originLon, latitude = originLat))
+        val destination = GeoPoint(longitude = lon, latitude = lat)
+        val liveLocation = userLocation.value?.let { fix ->
+            GeoPoint(longitude = fix.longitude, latitude = fix.latitude)
         }
-        vm.setDestination(GeoPoint(longitude = lon, latitude = lat))
+        val currentCamera = mapLibreMap?.cameraPosition?.target?.let { target ->
+            GeoPoint(longitude = target.longitude, latitude = target.latitude)
+        }
+        val origin = chooseRouteOrigin(
+            liveLocation = liveLocation,
+            currentCamera = currentCamera,
+            preFocusCamera = routeOriginBeforeResultFocus,
+            destination = destination,
+            cameraFocusedOnDestination = selectedSearchResult?.matches(destination) == true,
+        )
+        if (origin == null) {
+            scope.launch {
+                snackbarHostState.showSnackbar(context.getString(R.string.map_route_origin_unavailable))
+            }
+            return@startDirections
+        }
+        vm.setOrigin(origin)
+        vm.setDestination(destination)
+    }
+
+    val focusMapResult: (SearchResult) -> Unit = { result ->
+        routeOriginBeforeResultFocus = mapLibreMap?.cameraPosition?.target?.let { target ->
+            GeoPoint(longitude = target.longitude, latitude = target.latitude)
+        }
+        routeOriginCapturePending = routeOriginBeforeResultFocus == null
+        didInitialLocationFocus = true
+        selectedSearchResult = result
+    }
+
+    // A search can complete while MapLibre is still loading. Keeping the
+    // camera crossing in an effect makes that selection replay as soon as the
+    // style/map becomes ready instead of silently losing the focus request.
+    LaunchedEffect(mapLibreMap, selectedSearchResult) {
+        val map = mapLibreMap ?: return@LaunchedEffect
+        val result = selectedSearchResult ?: return@LaunchedEffect
+        if (routeOriginCapturePending) {
+            map.cameraPosition.target?.let { target ->
+                routeOriginBeforeResultFocus = GeoPoint(
+                    longitude = target.longitude,
+                    latitude = target.latitude,
+                )
+                routeOriginCapturePending = false
+            }
+        }
+        map.animateCamera(
+            org.maplibre.android.camera.CameraUpdateFactory.newLatLngZoom(
+                LatLng(result.latitude, result.longitude),
+                mapZoomForSearchResult(result),
+            ),
+            700,
+        )
+    }
+
+    LaunchedEffect(mapLibreMap, requestedMapTarget) {
+        val target = requestedMapTarget ?: return@LaunchedEffect
+        if (mapLibreMap == null) return@LaunchedEffect
+        focusMapResult(target)
+        onRequestedMapTargetConsumed()
+    }
+
+    // If permission was granted on an earlier run, make the first fresh fix
+    // visible automatically. Otherwise the blue dot can exist kilometres off
+    // the initial Adelaide camera and look "missing" until the FAB is pressed.
+    LaunchedEffect(mapLibreMap, userLocation.value, didInitialLocationFocus) {
+        val map = mapLibreMap ?: return@LaunchedEffect
+        val fix = userLocation.value ?: return@LaunchedEffect
+        if (!didInitialLocationFocus && isInsideActiveMapCoverage(
+                usingBundledFallback,
+                fix.latitude,
+                fix.longitude,
+            )
+        ) {
+            didInitialLocationFocus = true
+            map.animateCamera(
+                org.maplibre.android.camera.CameraUpdateFactory.newLatLngZoom(
+                    LatLng(fix.latitude, fix.longitude),
+                    MY_LOCATION_INITIAL_ZOOM,
+                ),
+                700,
+            )
+        }
+    }
+
+    // Keep the native view stable for the entire composition. Creating it in
+    // AndroidView.factory and then publishing it through mutable state caused
+    // an immediate AndroidView detach/reattach on first composition. MapLibre's
+    // render surface could be destroyed during that crossing before
+    // getMapAsync was delivered, leaving the loading overlay up forever.
+    val mapView = remember(context) {
+        MapLibre.getInstance(context)
+        val options = MapLibreMapOptions.createFromAttributes(context)
+            // Compose overlays and MapLibre stay in one composited hierarchy.
+            .textureMode(true)
+        MapView(context, options).also { mv ->
+            android.util.Log.i("MapScreen", "MapView created with TextureView renderer")
+            mv.onCreate(null)
+            mv.addOnDidFailLoadingMapListener { error ->
+                android.util.Log.e("MapScreen", "Map load failed: $error")
+                mapLoadState = MapLoadState.Failed
+            }
+            mv.getMapAsync { map ->
+                android.util.Log.i("MapScreen", "MapLibre map ready; preparing offline style")
+                scope.launch {
+                    runCatching {
+                        withContext(Dispatchers.IO) { ensureMbtilesAndStyle(context, installedPack) }
+                    }.onSuccess { styleJson ->
+                        map.setStyle(Style.Builder().fromJson(styleJson)) {
+                            configureMap(map)
+                            // Publish only after style readiness: every gesture
+                            // and overlay downstream depends on this seam.
+                            mapLibreMap = map
+                            // Style.OnStyleLoaded is MapLibre's deterministic
+                            // usability seam. Waiting for fully=true can block
+                            // forever on one missing glyph/sprite/tile even while
+                            // the rendered map is already interactive.
+                            mapLoadState = MapLoadState.Ready
+                            android.util.Log.i("MapScreen", "Map style ready; map interactive")
+                        }
+                    }.onFailure { error ->
+                        if (error is CancellationException) throw error
+                        android.util.Log.e("MapScreen", "Preparing offline map failed", error)
+                        mapLoadState = MapLoadState.Failed
+                    }
+                }
+            }
+        }
     }
 
     Box(modifier = modifier.fillMaxSize()) {
         AndroidView(
             modifier = Modifier.fillMaxSize(),
-            factory = { ctx ->
-                MapLibre.getInstance(ctx)
-                MapView(ctx).also { mv ->
-                    mv.onCreate(null)
-                    mv.getMapAsync { m ->
-                        val styleJson = ensureMbtilesAndStyle(ctx)
-                        m.setStyle(Style.Builder().fromJson(styleJson)) {
-                            configureMap(m)
-                            // Publish the map only once the style is ready, so overlay
-                            // effects (pins, user dot) that need `map.style` add their
-                            // layers reliably — including for pins present at launch.
-                            mapLibreMap = m
-                        }
-                    }
-                    mapView = mv
-                }
-            },
+            factory = { mapView },
             update = { /* lifecycle is forwarded via DisposableEffect below */ },
         )
 
         // Saved pins + live user-location layers (manage MapLibre layers, no UI)
         PinsMapOverlay(pins = pins, mapLibreMap = mapLibreMap)
+        SearchResultMapOverlay(result = selectedSearchResult, mapLibreMap = mapLibreMap)
         UserLocationOverlay(
             latitude = userLocation.value?.latitude,
             longitude = userLocation.value?.longitude,
@@ -360,7 +575,7 @@ private fun MapScreenContent(
         // Coverage banner: when rendering the bundled Adelaide demo tiles (no full
         // pack downloaded), make the limited extent explicit instead of silent.
         // Sits just below the search bar so it doesn't collide with it.
-        if (remember(context) { MapPackAvailability.isUsingBundledFallback(context) }) {
+        if (usingBundledFallback) {
             DemoCoverageBanner(
                 modifier = Modifier
                     .align(Alignment.TopCenter)
@@ -368,10 +583,9 @@ private fun MapScreenContent(
             )
         }
 
-        // My Location FAB — recenters on the live fix, requests permission if
-        // needed, and gives feedback when no fix is available yet. Hidden on the
-        // offline flavor, which has no location permission by design.
-        if (locationAvailable) {
+        // My Location requests precise + approximate together, accepts either,
+        // and is present in both network and no-network builds.
+        if (locationPermission.isDeclared) {
             MyLocationFab(
                 onClick = onMyLocation,
                 isLocated = userLocation.value != null,
@@ -392,26 +606,24 @@ private fun MapScreenContent(
         if (searchViewModel != null) {
             au.com.ausroads.feature.search.SearchOverlay(
                 viewModel = searchViewModel,
-                onResultSelected = { result ->
-                    mapLibreMap?.animateCamera(
-                        org.maplibre.android.camera.CameraUpdateFactory.newLatLngZoom(
-                            LatLng(result.latitude, result.longitude),
-                            12.0,
-                        ),
-                        1000,
-                    )
-                    // Set route destination from search result
-                    if (routeViewModel != null) {
-                        val camera = mapLibreMap?.cameraPosition?.target
-                        if (camera != null) {
-                            routeViewModel.setOrigin(GeoPoint(longitude = camera.longitude, latitude = camera.latitude))
-                        }
-                        routeViewModel.setDestination(
-                            GeoPoint(longitude = result.longitude, latitude = result.latitude),
-                        )
-                    }
-                },
-                modifier = Modifier.align(Alignment.TopCenter),
+                onResultSelected = focusMapResult,
+                modifier = Modifier
+                    .align(Alignment.TopCenter)
+                    .zIndex(10f),
+            )
+        }
+
+        if (mapLoadState != MapLoadState.Ready) {
+            MapLoadOverlay(
+                failed = mapLoadState == MapLoadState.Failed,
+                onOpenSettings = onOpenSettings,
+                modifier = Modifier.align(Alignment.Center),
+            )
+        } else if (!hasUsedLongPress) {
+            HoldToPinHint(
+                modifier = Modifier
+                    .align(Alignment.BottomCenter)
+                    .padding(bottom = 16.dp),
             )
         }
 
@@ -468,6 +680,9 @@ private fun MapScreenContent(
                     result = route,
                     onDismiss = { routeViewModel.clearRoute() },
                     navigationViewModel = navigationViewModel,
+                    preciseLocationGranted = locationPermission.isPreciseGranted,
+                    preciseLocationNeedsSettings = locationPermission.preciseNeedsSettings,
+                    onRequestPreciseLocation = locationPermission.request,
                     avoidOptions = routeAvoidOptions,
                     onAvoidOptionsChange = onRouteAvoidOptionsChange,
                 )
@@ -476,11 +691,11 @@ private fun MapScreenContent(
 
         // Route history button
         if (routeHistoryViewModel != null) {
-            Button(
+            OutlinedButton(
                 onClick = { showRouteHistory = true },
                 modifier = Modifier
                     .align(Alignment.TopStart)
-                    .padding(top = 8.dp, start = 16.dp),
+                    .padding(top = 128.dp, start = 16.dp),
             ) {
                 Text(stringResource(R.string.map_history_button))
             }
@@ -518,13 +733,27 @@ private fun MapScreenContent(
                     } else null,
                     onSave = { lat, lon ->
                         val name = feature.name
-                        onSavePin(lat, lon, name, PIN_SAVE_COLOR) { saved ->
-                            scope.launch {
-                                snackbarHostState.showSnackbar(
-                                    context.getString(R.string.map_pin_saved, saved.name),
-                                )
-                            }
-                        }
+                        onSavePin(
+                            lat,
+                            lon,
+                            name,
+                            PIN_SAVE_COLOR,
+                            { saved ->
+                                scope.launch {
+                                    snackbarHostState.showSnackbar(
+                                        context.getString(R.string.map_pin_saved, saved.name),
+                                    )
+                                }
+                            },
+                            { error ->
+                                android.util.Log.e("MapScreen", "Saving identified feature failed", error)
+                                scope.launch {
+                                    snackbarHostState.showSnackbar(
+                                        context.getString(R.string.map_pin_save_failed),
+                                    )
+                                }
+                            },
+                        )
                         selectedFeature = null
                     },
                 )
@@ -553,18 +782,29 @@ private fun MapScreenContent(
                 longitude = drop.longitude,
                 reverseGeocode = reverseGeocode,
                 onDismiss = { pendingDrop = null },
-                onSave = { name, color ->
-                    onSavePin(drop.latitude, drop.longitude, name, color) { saved ->
-                        scope.launch {
-                            val result = snackbarHostState.showSnackbar(
-                                message = context.getString(R.string.map_pin_saved, saved.name),
-                                actionLabel = context.getString(R.string.action_undo),
-                                duration = SnackbarDuration.Short,
-                            )
-                            if (result == SnackbarResult.ActionPerformed) onDeletePin(saved)
-                        }
-                    }
-                    pendingDrop = null
+                onSave = { name, color, onSuccess, onFailure ->
+                    onSavePin(
+                        drop.latitude,
+                        drop.longitude,
+                        name,
+                        color,
+                        { saved ->
+                            pendingDrop = null
+                            onSuccess()
+                            scope.launch {
+                                val result = snackbarHostState.showSnackbar(
+                                    message = context.getString(R.string.map_pin_saved, saved.name),
+                                    actionLabel = context.getString(R.string.action_undo),
+                                    duration = SnackbarDuration.Short,
+                                )
+                                if (result == SnackbarResult.ActionPerformed) onDeletePin(saved)
+                            }
+                        },
+                        { error ->
+                            android.util.Log.e("MapScreen", "Dropped-pin save failed", error)
+                            onFailure(context.getString(R.string.map_pin_save_failed))
+                        },
+                    )
                 },
                 onDirections = {
                     startDirectionsTo(drop.latitude, drop.longitude)
@@ -612,7 +852,21 @@ private fun MapScreenContent(
                 selectedPin = currentPins.value.firstOrNull { it.id == pinId }
                 return@addOnMapClickListener true
             }
-            // 2) Traffic features (asString, not toString — same JSON-quote pitfall)
+            // 2) The selected search/Nearby marker sits above the base POI style,
+            // so query its own layer and open the same Save/Directions sheet.
+            val selectedResult = currentSelectedSearchResult.value
+            val selectedResultHits = m.queryRenderedFeatures(
+                screenPoint,
+                SELECTED_SEARCH_RESULT_POINT_LAYER_ID,
+                SELECTED_SEARCH_RESULT_HALO_LAYER_ID,
+            )
+            if (selectedResult != null && selectedResultHits.isNotEmpty()) {
+                selectedFeature = selectedResult.toIdentifiedFeature(
+                    context.getString(selectedResult.kindLabelResource()),
+                )
+                return@addOnMapClickListener true
+            }
+            // 3) Traffic features (asString, not toString — same JSON-quote pitfall)
             val trafficHits = m.queryRenderedFeatures(screenPoint, "traffic-points")
             val hitId = trafficHits.firstOrNull()?.properties()?.get("id")
                 ?.takeIf { !it.isJsonNull }?.asString
@@ -620,33 +874,75 @@ private fun MapScreenContent(
                 selectedTrafficEvent = currentTrafficEvents.value.firstOrNull { it.primaryKey == hitId }
                 return@addOnMapClickListener true
             }
-            // 3) Labelled map features (road / suburb / POI)
+            // 4) Labelled map features (road / suburb / POI)
             val hit = identifyFeature(context, m, latLng)
             if (hit != null) selectedFeature = hit
             false
         }
         m.addOnMapLongClickListener { latLng ->
+            android.util.Log.i("MapScreen", "Map long-press accepted; opening pin editor")
+            hasUsedLongPress = true
+            currentHapticFeedback.value.performHapticFeedback(HapticFeedbackType.LongPress)
             pendingDrop = latLng
             true
         }
     }
 
-    DisposableEffect(lifecycleOwner) {
+    DisposableEffect(lifecycleOwner, mapView) {
+        val mv = mapView
+        var started = false
+        var resumed = false
+
+        fun start() {
+            if (!started) {
+                android.util.Log.i("MapScreen", "Forwarding MapView.onStart")
+                mv.onStart()
+                started = true
+            }
+        }
+        fun resume() {
+            start()
+            if (!resumed) {
+                android.util.Log.i("MapScreen", "Forwarding MapView.onResume")
+                mv.onResume()
+                resumed = true
+            }
+        }
+        fun pause() {
+            if (resumed) {
+                android.util.Log.i("MapScreen", "Forwarding MapView.onPause")
+                mv.onPause()
+                resumed = false
+            }
+        }
+        fun stop() {
+            recenterRequestOwner.cancel()
+            pause()
+            if (started) {
+                android.util.Log.i("MapScreen", "Forwarding MapView.onStop")
+                mv.onStop()
+                started = false
+            }
+        }
+
         val observer = LifecycleEventObserver { _, event ->
-            val mv = mapView ?: return@LifecycleEventObserver
             when (event) {
-                Lifecycle.Event.ON_START -> mv.onStart()
-                Lifecycle.Event.ON_RESUME -> mv.onResume()
-                Lifecycle.Event.ON_PAUSE -> mv.onPause()
-                Lifecycle.Event.ON_STOP -> mv.onStop()
+                Lifecycle.Event.ON_START -> start()
+                Lifecycle.Event.ON_RESUME -> resume()
+                Lifecycle.Event.ON_PAUSE -> pause()
+                Lifecycle.Event.ON_STOP -> stop()
                 else -> Unit
             }
         }
         lifecycleOwner.lifecycle.addObserver(observer)
+        if (lifecycleOwner.lifecycle.currentState.isAtLeast(Lifecycle.State.STARTED)) start()
+        if (lifecycleOwner.lifecycle.currentState.isAtLeast(Lifecycle.State.RESUMED)) resume()
         onDispose {
             lifecycleOwner.lifecycle.removeObserver(observer)
-            mapView?.onDestroy()
-            mapView = null
+            recenterRequestOwner.cancel()
+            stop()
+            android.util.Log.i("MapScreen", "Forwarding MapView.onDestroy")
+            mv.onDestroy()
             mapLibreMap = null
         }
     }
@@ -658,9 +954,9 @@ private fun MapScreenContent(
         @Suppress("DEPRECATION") // memory-pressure constants/onLowMemory; alternatives are also deprecated
         val callbacks = object : ComponentCallbacks2 {
             override fun onTrimMemory(level: Int) {
-                if (level >= ComponentCallbacks2.TRIM_MEMORY_RUNNING_LOW) mv?.onLowMemory()
+                if (level >= ComponentCallbacks2.TRIM_MEMORY_RUNNING_LOW) mv.onLowMemory()
             }
-            override fun onLowMemory() { mv?.onLowMemory() }
+            override fun onLowMemory() { mv.onLowMemory() }
             override fun onConfigurationChanged(newConfig: android.content.res.Configuration) = Unit
         }
         context.applicationContext.registerComponentCallbacks(callbacks)
@@ -685,6 +981,30 @@ private fun configureMap(map: MapLibreMap) {
         .build()
 }
 
+internal fun isInsideActiveMapCoverage(
+    usingBundledFallback: Boolean,
+    latitude: Double,
+    longitude: Double,
+): Boolean {
+    val bounds = if (usingBundledFallback) {
+        BUNDLED_COVERAGE
+    } else {
+        SOUTH_AUSTRALIA_COVERAGE
+    }
+    return longitude in bounds.west..bounds.east && latitude in bounds.south..bounds.north
+}
+
+private data class MapCoverage(
+    val west: Double,
+    val south: Double,
+    val east: Double,
+    val north: Double,
+)
+
+private val BUNDLED_COVERAGE = MapCoverage(138.4, -35.2, 139.0, -34.6)
+private val SOUTH_AUSTRALIA_COVERAGE = MapCoverage(129.0, -38.0, 141.0, -26.0)
+private const val MY_LOCATION_INITIAL_ZOOM = 15.0
+
 private fun identifyFeature(context: android.content.Context, map: MapLibreMap, latLng: LatLng): IdentifiedFeature? {
     val screenPoint = map.projection.toScreenLocation(latLng)
     return IDENTIFY_LAYERS.firstNotNullOfOrNull { layer ->
@@ -692,14 +1012,15 @@ private fun identifyFeature(context: android.content.Context, map: MapLibreMap, 
         hits.firstNotNullOfOrNull { hit ->
             val props = hit.properties() ?: return@firstNotNullOfOrNull null
             val name = (props["name:en"] ?: props["name"] ?: props["name:latin"])
-                ?.toString()
+                ?.takeIf { !it.isJsonNull }
+                ?.asString
                 ?.takeIf { it.isNotBlank() }
                 ?: return@firstNotNullOfOrNull null
             IdentifiedFeature(
                 name = name,
                 kind = context.getString(layer.kindRes),
                 sourceLayer = layer.sourceLayer,
-                featureClass = props["class"]?.toString(),
+                featureClass = props["class"]?.takeIf { !it.isJsonNull }?.asString,
                 latitude = latLng.latitude,
                 longitude = latLng.longitude,
             )
@@ -707,7 +1028,7 @@ private fun identifyFeature(context: android.content.Context, map: MapLibreMap, 
     }
 }
 
-private data class IdentifiedFeature(
+internal data class IdentifiedFeature(
     val name: String,
     val kind: String,
     val sourceLayer: String,
@@ -715,6 +1036,50 @@ private data class IdentifiedFeature(
     val latitude: Double = 0.0,
     val longitude: Double = 0.0,
 )
+
+internal fun chooseRouteOrigin(
+    liveLocation: GeoPoint?,
+    currentCamera: GeoPoint?,
+    preFocusCamera: GeoPoint?,
+    destination: GeoPoint,
+    cameraFocusedOnDestination: Boolean,
+): GeoPoint? {
+    val candidate = liveLocation ?: if (cameraFocusedOnDestination) {
+        preFocusCamera ?: currentCamera
+    } else {
+        currentCamera
+    }
+    return candidate?.takeIf {
+        MeasureGeometry.haversineMeters(it, destination) >= MIN_ROUTE_ORIGIN_DISTANCE_METERS
+    }
+}
+
+private fun SearchResult.matches(destination: GeoPoint): Boolean =
+    latitude == destination.latitude && longitude == destination.longitude
+
+private fun SearchResult.kindLabelResource(): Int = when (kind.lowercase()) {
+    "poi" -> R.string.feature_poi
+    "road" -> R.string.feature_road
+    "suburb" -> R.string.feature_place
+    else -> R.string.feature_search_result
+}
+
+internal fun SearchResult.toIdentifiedFeature(kindLabel: String): IdentifiedFeature =
+    IdentifiedFeature(
+        name = name,
+        kind = kindLabel,
+        sourceLayer = when (kind.lowercase()) {
+            "poi" -> "poi"
+            "road" -> "transportation_name"
+            "suburb" -> "place"
+            "park" -> "park"
+            "water" -> "water"
+            else -> "search"
+        },
+        featureClass = className,
+        latitude = latitude,
+        longitude = longitude,
+    )
 
 @Composable
 private fun FeatureSheetBody(
@@ -868,24 +1233,9 @@ private fun MyLocationFab(
 private val UserAccentBlue = Color(0xFF1E88E5)
 
 /**
- * True only when the app actually declares a location permission in its merged
- * manifest. The `offline` product flavor strips ACCESS_*_LOCATION, so location UI
- * must be hidden there — requesting a permission absent from the manifest is
- * instantly denied and would leave a dead button.
- */
-private fun isLocationFeatureDeclared(context: Context): Boolean = runCatching {
-    context.packageManager
-        .getPackageInfo(context.packageName, PackageManager.GET_PERMISSIONS)
-        .requestedPermissions
-        ?.contains(Manifest.permission.ACCESS_FINE_LOCATION) == true
-}.getOrDefault(false)
-
-/**
  * Recenters the camera on the user and the live-location stream for the blue dot
- * are flavor-specific: the real fused-location implementations live in the
- * withNetwork source set, and the offline flavor provides no-op twins (see
- * src/{withNetwork,offline}/.../ui/map/LocationProviders.kt). This keeps Google
- * Play Services and all location code out of the privacy-first offline build.
+ * are flavor-specific: the network build uses fused location while the no-network
+ * build uses Android's on-device LocationManager and links no Google Play Services.
  */
 
 // Default colour for a newly-saved place (one dedicated "saved" green, kept
@@ -911,14 +1261,19 @@ private val MicroLabelFont = androidx.compose.ui.text.font.FontFamily.Monospace
  * name (offline), lets the user adjust name + colour, and persists only on Save.
  */
 @OptIn(ExperimentalMaterial3Api::class)
-@Suppress("LongParameterList")
+@Suppress("LongParameterList", "TooGenericExceptionCaught")
 @Composable
 private fun DropPinSheet(
     latitude: Double,
     longitude: Double,
     reverseGeocode: suspend (Double, Double) -> String?,
     onDismiss: () -> Unit,
-    onSave: (name: String, color: String) -> Unit,
+    onSave: (
+        name: String,
+        color: String,
+        onSuccess: () -> Unit,
+        onFailure: (String) -> Unit,
+    ) -> Unit,
     onDirections: () -> Unit,
 ) {
     val sheetState = rememberModalBottomSheetState()
@@ -926,9 +1281,18 @@ private fun DropPinSheet(
     var selectedColor by remember { mutableStateOf(PIN_SAVE_COLOR) }
     var place by remember { mutableStateOf<String?>(null) }
     var resolved by remember { mutableStateOf(false) }
+    var isSaving by remember { mutableStateOf(false) }
+    var saveError by remember { mutableStateOf<String?>(null) }
 
     LaunchedEffect(latitude, longitude) {
-        val suggestion = reverseGeocode(latitude, longitude)
+        val suggestion = try {
+            reverseGeocode(latitude, longitude)
+        } catch (error: CancellationException) {
+            throw error
+        } catch (error: Exception) {
+            android.util.Log.w("MapScreen", "Pin reverse-geocode failed; using coordinates", error)
+            null
+        }
         place = suggestion
         if (name.isBlank() && suggestion != null) name = suggestion
         resolved = true
@@ -963,6 +1327,13 @@ private fun DropPinSheet(
                 selectedColor = selectedColor,
                 onColorSelected = { selectedColor = it },
             )
+            saveError?.let { message ->
+                Text(
+                    text = message,
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.error,
+                )
+            }
             Row(
                 modifier = Modifier.fillMaxWidth(),
                 horizontalArrangement = Arrangement.spacedBy(8.dp, Alignment.End),
@@ -971,14 +1342,32 @@ private fun DropPinSheet(
                     Text(stringResource(R.string.route_directions))
                 }
                 Button(
+                    enabled = !isSaving,
                     onClick = {
                         val finalName = name.trim().ifBlank {
                             place ?: "%.4f, %.4f".format(latitude, longitude)
                         }
-                        onSave(finalName, selectedColor)
+                        isSaving = true
+                        saveError = null
+                        onSave(
+                            finalName,
+                            selectedColor,
+                            { isSaving = false },
+                            { message ->
+                                isSaving = false
+                                saveError = message
+                            },
+                        )
                     },
                 ) {
-                    Text(stringResource(R.string.action_save))
+                    if (isSaving) {
+                        CircularProgressIndicator(
+                            modifier = Modifier.size(18.dp),
+                            strokeWidth = 2.dp,
+                        )
+                    } else {
+                        Text(stringResource(R.string.action_save))
+                    }
                 }
             }
             Spacer(modifier = Modifier.height(8.dp))

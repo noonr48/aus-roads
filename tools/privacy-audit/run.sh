@@ -4,7 +4,7 @@
 #
 # Checks:
 # 1. INTERNET permission only allowed on withNetwork flavor
-# 2. ACCESS_*_LOCATION never allowed on any flavor
+# 2. Foreground location is allowed only for on-device features; background location is forbidden
 # 3. Only one HttpClient instance in the codebase (in MapPackManager)
 # 4. No analytics/crash-reporting SDKs
 
@@ -63,14 +63,62 @@ echo ""
 echo "Checking location permissions..."
 
 for manifest in $MANIFESTS; do
-    if grep -q 'ACCESS_FINE_LOCATION\|ACCESS_COARSE_LOCATION' "$manifest" 2>/dev/null; then
-        if grep 'ACCESS_FINE_LOCATION\|ACCESS_COARSE_LOCATION' "$manifest" | grep -q 'tools:node="remove"'; then
+    if grep -q 'ACCESS_BACKGROUND_LOCATION' "$manifest" 2>/dev/null; then
+        log_fail "$(basename "$manifest"): background location is forbidden"
+    elif grep -q 'ACCESS_FINE_LOCATION\|ACCESS_COARSE_LOCATION' "$manifest" 2>/dev/null; then
+        if [[ "$manifest" == "$ANDROID_DIR/app/src/main/AndroidManifest.xml" ]]; then
+            log_ok "$(basename "$manifest"): foreground location declared for opt-in on-device features"
+        elif grep 'ACCESS_FINE_LOCATION\|ACCESS_COARSE_LOCATION' "$manifest" | grep -q 'tools:node="remove"'; then
             log_ok "$(basename "$manifest"): Location permissions stripped"
         else
-            log_fail "$(basename "$manifest"): Location permissions present without tools:node=remove"
+            log_fail "$(basename "$manifest"): unexpected foreground location declaration"
         fi
+    else
+        log_ok "$(basename "$manifest"): No location permission declaration"
     fi
 done
+
+# Check the dependency-merged manifests too. Source-only checks cannot detect a
+# transitive library adding a permission to the final application.
+echo ""
+echo "Checking merged application manifests..."
+if ! (cd "$ANDROID_DIR" && ./gradlew \
+    :app:processOfflineDebugMainManifest \
+    :app:processWithNetworkDebugMainManifest -q); then
+    log_fail "Could not generate merged manifests"
+else
+    for variant in offlineDebug withNetworkDebug; do
+        MERGED_MANIFEST=$(find \
+            "$ANDROID_DIR/app/build/intermediates/merged_manifest/$variant" \
+            -name AndroidManifest.xml -print -quit 2>/dev/null || true)
+        if [ -z "$MERGED_MANIFEST" ]; then
+            log_fail "$variant: merged manifest is missing"
+            continue
+        fi
+        if grep -q 'ACCESS_BACKGROUND_LOCATION' "$MERGED_MANIFEST"; then
+            log_fail "$variant: merged app contains forbidden background location"
+        else
+            log_ok "$variant: merged app has no background location"
+        fi
+        if grep -q 'ACCESS_FINE_LOCATION' "$MERGED_MANIFEST" && \
+            grep -q 'ACCESS_COARSE_LOCATION' "$MERGED_MANIFEST"; then
+            log_ok "$variant: merged app has coarse + fine foreground location"
+        else
+            log_fail "$variant: merged app is missing the foreground location pair"
+        fi
+        if [ "$variant" = "offlineDebug" ]; then
+            if grep -q 'android.permission.INTERNET' "$MERGED_MANIFEST"; then
+                log_fail "$variant: merged app unexpectedly contains INTERNET"
+            else
+                log_ok "$variant: merged app contains no INTERNET permission"
+            fi
+        elif grep -q 'android.permission.INTERNET' "$MERGED_MANIFEST"; then
+            log_ok "$variant: merged app contains expected INTERNET permission"
+        else
+            log_fail "$variant: merged app is missing expected INTERNET permission"
+        fi
+    done
+fi
 
 # --- Check 3: HttpClient instances ---
 echo ""
@@ -99,10 +147,18 @@ echo "Checking for analytics/crash SDKs..."
 FORBIDDEN_SDKS=("firebase" "crashlytics" "google-analytics" "amplitude" "mixpanel" "appsflyer" "adjust")
 
 for sdk in "${FORBIDDEN_SDKS[@]}"; do
-    COUNT=$(grep -ri "$sdk" "$ANDROID_DIR" --include="*.kt" --include="*.gradle*" --include="*.toml" -l 2>/dev/null | grep -v build | grep -v ".gradle" | wc -l || true)
+    PATTERN="$sdk"
+    if [[ "$sdk" == "adjust" ]]; then
+        # "adjust" is ordinary UI prose; match only real Adjust SDK identifiers.
+        PATTERN='com\.adjust|io\.adjust|adjust-android'
+    fi
+    MATCHES=$(grep -Eri "$PATTERN" "$ANDROID_DIR" \
+        --include="*.kt" --include="*.gradle*" --include="*.toml" --include="AndroidManifest.xml" \
+        -l 2>/dev/null | grep -v '/build/' | grep -v '/\.gradle/' || true)
+    COUNT=$(printf '%s\n' "$MATCHES" | sed '/^$/d' | wc -l)
     if [ "$COUNT" -gt 0 ]; then
         log_fail "Found references to '$sdk' SDK"
-        grep -ri "$sdk" "$ANDROID_DIR" --include="*.kt" --include="*.gradle*" --include="*.toml" -l 2>/dev/null | grep -v build | grep -v ".gradle"
+        printf '%s\n' "$MATCHES"
     else
         log_ok "No '$sdk' references"
     fi

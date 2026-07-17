@@ -12,10 +12,10 @@ import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.catch
+import kotlinx.coroutines.flow.combine
+import kotlinx.coroutines.flow.collectLatest
 import kotlinx.coroutines.flow.debounce
 import kotlinx.coroutines.flow.distinctUntilChanged
-import kotlinx.coroutines.flow.launchIn
-import kotlinx.coroutines.flow.onEach
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
 
@@ -37,50 +37,83 @@ class SearchViewModel @Inject constructor(
     private val _searchFailed = MutableStateFlow(false)
     val searchFailed: StateFlow<Boolean> = _searchFailed.asStateFlow()
 
+    private val _searchUnavailable = MutableStateFlow(false)
+    val searchUnavailable: StateFlow<Boolean> = _searchUnavailable.asStateFlow()
+
     private val _isActive = MutableStateFlow(false)
     val isActive: StateFlow<Boolean> = _isActive.asStateFlow()
 
     init {
-        _query
-            .debounce(300)
-            .distinctUntilChanged()
-            .onEach { q ->
-                if (q.isBlank()) {
+        viewModelScope.launch {
+            _query
+                .debounce(300)
+                .distinctUntilChanged()
+                .combine(searchRepository.readiness.distinctUntilChanged()) { query, ready ->
+                    query to ready
+                }
+                .catch {
                     _isSearching.update { false }
-                    _searchFailed.update { false }
                     _results.update { emptyList() }
-                } else {
-                    _isSearching.update { true }
-                    _searchFailed.update { false }
-                    try {
-                        val found = searchRepository.search(q, limit = 20)
-                        _results.update { found }
-                    } catch (e: CancellationException) {
-                        throw e
-                    } catch (e: Exception) {
-                        // A corrupt/missing index must not kill the search collector
-                        // or crash the app — surface an error state instead.
-                        _results.update { emptyList() }
-                        _searchFailed.update { true }
-                    } finally {
+                    _searchFailed.update { true }
+                }
+                .collectLatest { (q, ready) ->
+                    // The debounced value can lag behind text the user has already
+                    // entered. Never let that old emission overwrite the immediate
+                    // pending state established by onQueryChange().
+                    if (q != _query.value) return@collectLatest
+                    if (q.isBlank()) {
                         _isSearching.update { false }
+                        _searchFailed.update { false }
+                        _searchUnavailable.update { false }
+                        _results.update { emptyList() }
+                    } else {
+                        if (!ready) {
+                            _isSearching.update { false }
+                            _searchFailed.update { false }
+                            _searchUnavailable.update { true }
+                            _results.update { emptyList() }
+                            return@collectLatest
+                        }
+                        _isSearching.update { true }
+                        _searchFailed.update { false }
+                        _searchUnavailable.update { false }
+                        try {
+                            val found = searchRepository.search(q, limit = 20)
+                            if (q == _query.value) _results.update { found }
+                        } catch (e: CancellationException) {
+                            throw e
+                        } catch (e: Exception) {
+                            // A corrupt/missing index must not kill the search collector
+                            // or crash the app — surface an error state instead.
+                            if (q == _query.value) {
+                                _results.update { emptyList() }
+                                _searchFailed.update { true }
+                            }
+                        } finally {
+                            if (q == _query.value) _isSearching.update { false }
+                        }
                     }
                 }
-            }
-            .catch { /* upstream backstop: never let the collector die */ }
-            .launchIn(viewModelScope)
+        }
     }
 
     fun onQueryChange(newQuery: String) {
+        if (newQuery == _query.value) return
         _query.update { newQuery }
+        _results.update { emptyList() }
+        _isSearching.update { newQuery.isNotBlank() }
+        _searchFailed.update { false }
+        _searchUnavailable.update { false }
     }
 
     fun onActiveChange(active: Boolean) {
         _isActive.update { active }
     }
 
+    @Suppress("UnusedParameter")
     fun onResultSelected(result: SearchResult) {
         _isActive.update { false }
+        onClear()
     }
 
     fun onClear() {
@@ -88,6 +121,7 @@ class SearchViewModel @Inject constructor(
         _results.update { emptyList() }
         _isSearching.update { false }
         _searchFailed.update { false }
+        _searchUnavailable.update { false }
     }
 
     /**

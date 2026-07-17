@@ -30,6 +30,8 @@ Helper scripts: `build-search-index.sh` produces `dist/search.db` (packaged when
 present); `build-valhalla-tiles.sh` builds the routing graph via Docker;
 `package-pack.sh` assembles the zip and includes the routing tar with
 `routing.format:"valhalla"` whenever a graph is available, else `"none"`.
+`build-bundled-demo-assets.sh` is the only supported way to refresh the map and
+search databases checked into the APK.
 
 ## Quickstart (test pack)
 
@@ -43,8 +45,8 @@ into `cache/`, then produces `dist/adelaide-test-tiles.mbtiles` (~19 MB).
 
 ## Outputs
 
-- `dist/adelaide-test-tiles.mbtiles` — 19 MB vector tile pyramid z0–z14,
-  covering Adelaide metro (138.55°E–138.70°E, 35.00°S–34.85°S).
+- `dist/adelaide-test-tiles.mbtiles` — vector tile pyramid z0–z14, covering the
+  configured `PACK_BBOX` (default: 138.4°E–139.0°E, 35.2°S–34.6°S).
 - `dist/style.json` — MapLibre style spec with the OpenMapTiles layers we care
   about: roads, water, parks, buildings, road names, suburb names, POIs.
 - `dist/manifest.json` — manifest matching
@@ -59,7 +61,31 @@ implemented, the test pack is bundled into the app at:
 ```
 android/app/src/main/assets/maptile/
   adelaide-test-tiles.mbtiles
+  adelaide-test-tiles.mbtiles.sha256
+  adelaide-test-search-v1.db
+  adelaide-test-search-v1.db.sha256
   style.json
+```
+
+Refresh the bundled databases with the canonical paired build:
+
+```bash
+./scripts/build-bundled-demo-assets.sh
+```
+
+That command rebuilds tiles and search from the same PBF and shared demo bbox,
+then stages both and their checksums before replacing the app assets. The search
+clip reads its bounds directly from the newly built MBTiles metadata. Each
+adjacent `.sha256` contains the raw lowercase SHA-256 of its database. The whole
+`maptile` directory is published with one Linux `renameat2(RENAME_EXCHANGE)`, so
+an interrupt cannot expose mixed map/search generations. Do not copy a standalone
+`dist/search.db` into the app: it may cover a different `PACK_BBOX`.
+
+Synchronise the checksum-pinned Open Sans ranges used by bundled road and place
+labels (including the extended Unicode ranges present in local names) with:
+
+```bash
+./scripts/sync-bundled-glyphs.sh
 ```
 
 The MapLibre MapView loads via `asset://` URLs (see
@@ -68,11 +94,10 @@ for the wiring).
 
 ## Adelaide bbox reasoning
 
-The test pack covers a 20 km × 20 km box centered roughly on the Adelaide
-CBD — north of the airport, south of the city centre, west of the hills, east
-of the parklands. This is enough to demo every layer in the OpenMapTiles
-schema (roads, water, parks, buildings, POIs, place names) at zoom 12–14
-without bloating the file past 20 MB.
+The test pack covers the Adelaide metro and surrounding coast/foothills at
+`138.4,-35.2,139,-34.6`. The single shared value lives in
+`scripts/bundled-demo-contract.sh`; the tile build and paired asset installer
+both source it.
 
 ## Reproducing the build from scratch
 

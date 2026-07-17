@@ -63,8 +63,6 @@ fun AusRoadsApp() {
             }
             AusRoadsNavHost(
                 navController = navController,
-                startDestination = backStackEntry?.destination?.route
-                    ?: AusRoadsDestination.Map.route,
                 modifier = Modifier.weight(1f),
             )
         }
@@ -100,8 +98,6 @@ fun AusRoadsApp() {
         ) { innerPadding ->
             AusRoadsNavHost(
                 navController = navController,
-                startDestination = backStackEntry?.destination?.route
-                    ?: AusRoadsDestination.Map.route,
                 modifier = Modifier.padding(innerPadding),
             )
         }

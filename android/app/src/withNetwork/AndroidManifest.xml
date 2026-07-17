@@ -7,10 +7,6 @@
     <uses-permission android:name="android.permission.ACCESS_WIFI_STATE" />
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE_DATA_SYNC" />
     <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
-    <!-- Location permissions for "My Location" button and navigation GPS -->
-    <uses-permission android:name="android.permission.ACCESS_COARSE_LOCATION" />
-    <uses-permission android:name="android.permission.ACCESS_FINE_LOCATION" />
-
     <!-- Android Auto descriptor names a com.google.android.gms.* component, so it is
          declared only in the withNetwork flavor to keep the privacy-first offline
          build free of any Google Play Services reference (incl. the manifest). -->

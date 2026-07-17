@@ -28,6 +28,8 @@ class PackInstaller @Inject constructor(
         data object Installed : Outcome
         /** Verification failed; the install dir was removed. [message] is user-facing-ish. */
         data class VerificationFailed(val message: String) : Outcome
+        /** Verified bytes could not safely replace the live version directory. */
+        data class InstallationFailed(val message: String) : Outcome
     }
 
     /**
@@ -43,6 +45,7 @@ class PackInstaller @Inject constructor(
         manifest: PackManifest?,
         manifestJson: String?,
         zipLength: Long,
+        finalDir: File = installDir,
     ): Outcome {
         if (manifest != null) {
             when (val result = packVerifier.verify(installDir, manifest)) {
@@ -69,9 +72,26 @@ class PackInstaller @Inject constructor(
             searchPath = manifest?.components?.search?.takeIf { sc -> sc.format != "none" }?.path ?: "search.db",
             routingPath = manifest?.components?.routing?.takeIf { rc -> rc.format != "none" }?.path,
             manifestSha256 = manifestJson?.let { sha256OfJson(it) } ?: "",
+            directoryName = finalDir.name,
         )
-        evictionManager.onNewInstall(installedPack)
+        evictionManager.onNewInstall(installedPack) {
+            promoteVerifiedDirectory(installDir, finalDir)
+        }?.let { message ->
+            installDir.deleteRecursively()
+            return Outcome.InstallationFailed(message)
+        }
         return Outcome.Installed
+    }
+
+    /** Promote verified staging bytes into a never-before-used generation path. */
+    private fun promoteVerifiedDirectory(stagingDir: File, finalDir: File): String? {
+        if (stagingDir.canonicalFile == finalDir.canonicalFile) return null
+        finalDir.parentFile?.mkdirs()
+        if (finalDir.exists()) return "Could not install map into an occupied generation"
+        if (!stagingDir.renameTo(finalDir)) {
+            return "Could not promote the verified map pack"
+        }
+        return null
     }
 
     private fun sha256OfJson(json: String): String {

@@ -3,18 +3,16 @@
  * backing the blue dot and the "My Location" FAB.
  *
  * These functions (and the play-services-location dependency they need) are
- * deliberately confined to the withNetwork source set so the privacy-first
- * `offline` flavor links no Google Play Services and compiles no location code.
- * The `offline` source set provides no-op twins with identical signatures, so the
- * shared MapScreen in src/main compiles unchanged against either flavor.
+ * deliberately confined to the withNetwork source set. The `offline` source set
+ * provides Android LocationManager twins with identical signatures, so the
+ * shared MapScreen compiles unchanged without linking Google Play Services.
  */
 package au.com.ausroads.ui.map
 
-import android.Manifest
 import android.annotation.SuppressLint
 import android.content.Context
-import android.content.pm.PackageManager
 import android.location.Location
+import android.os.Handler
 import android.os.Looper
 import android.util.Log
 import androidx.compose.material3.SnackbarHostState
@@ -24,7 +22,6 @@ import androidx.compose.runtime.State
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.ui.platform.LocalContext
-import androidx.core.content.ContextCompat
 import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.LifecycleEventObserver
 import androidx.lifecycle.compose.LocalLifecycleOwner
@@ -33,6 +30,7 @@ import com.google.android.gms.location.LocationRequest
 import com.google.android.gms.location.LocationResult
 import com.google.android.gms.location.LocationServices
 import com.google.android.gms.location.Priority
+import com.google.android.gms.tasks.CancellationTokenSource
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.launch
 import org.maplibre.android.camera.CameraUpdateFactory
@@ -61,20 +59,51 @@ internal fun rememberUserLocation(hasPermission: Boolean): State<Location?> {
             return@DisposableEffect onDispose { }
         }
         val client = LocationServices.getFusedLocationProviderClient(context)
+        val handler = Handler(Looper.getMainLooper())
+        var isStarted = false
+        var currentLocationCancellation: CancellationTokenSource? = null
+        var expiringFixTimeMillis: Long? = null
+        val clearExpiredFix = Runnable {
+            if (location.value?.time == expiringFixTimeMillis) location.value = null
+        }
+        fun clearLocation() {
+            handler.removeCallbacks(clearExpiredFix)
+            expiringFixTimeMillis = null
+            location.value = null
+        }
+        fun cancelCurrentLocationRequest() {
+            currentLocationCancellation?.cancel()
+            currentLocationCancellation = null
+        }
+        fun publishIfFresh(fix: Location?) {
+            if (!isStarted || fix == null) return
+            val delayMillis = remainingLocationFreshnessMillis(
+                fixTimeMillis = fix.time,
+                nowMillis = System.currentTimeMillis(),
+            ) ?: return
+            handler.removeCallbacks(clearExpiredFix)
+            location.value = fix
+            expiringFixTimeMillis = fix.time
+            handler.postDelayed(clearExpiredFix, delayMillis)
+        }
         val request = LocationRequest.Builder(Priority.PRIORITY_HIGH_ACCURACY, 2000L)
             .setMinUpdateDistanceMeters(0f)
             .build()
         val callback = object : LocationCallback() {
             override fun onLocationResult(result: LocationResult) {
                 result.lastLocation?.let {
-                    Log.d(TAG, "location update: ${it.latitude},${it.longitude} (acc ${it.accuracy}m)")
-                    location.value = it
+                    Log.d(TAG, "location update (acc ${it.accuracy}m)")
+                    publishIfFresh(it)
                 }
             }
         }
 
         @SuppressLint("MissingPermission")
         fun start() {
+            if (isStarted) return
+            isStarted = true
+            clearLocation()
+            cancelCurrentLocationRequest()
             Log.i(TAG, "starting fused location updates")
             // Seed immediately: lastLocation is fast but often null on a cold device,
             // so also request a single fresh fix so the blue dot appears promptly.
@@ -82,31 +111,56 @@ internal fun rememberUserLocation(hasPermission: Boolean): State<Location?> {
                 client.lastLocation
                     .addOnSuccessListener { loc ->
                         if (loc != null) {
-                            Log.d(TAG, "lastLocation: ${loc.latitude},${loc.longitude} (acc ${loc.accuracy}m)")
-                            location.value = loc
+                            if (isLocationFixFresh(loc.time, System.currentTimeMillis())) {
+                                Log.d(TAG, "lastLocation accepted (acc ${loc.accuracy}m)")
+                                publishIfFresh(loc)
+                            } else {
+                                Log.i(TAG, "lastLocation was stale; waiting for a fresh fix")
+                            }
                         } else {
                             Log.i(TAG, "lastLocation returned null (no cached fix)")
                         }
                     }
                     .addOnFailureListener { Log.w(TAG, "lastLocation failed", it) }
             }.onFailure { Log.w(TAG, "lastLocation call threw", it) }
+            val cancellation = CancellationTokenSource()
+            currentLocationCancellation = cancellation
             runCatching {
-                client.getCurrentLocation(Priority.PRIORITY_HIGH_ACCURACY, null)
+                client.getCurrentLocation(Priority.PRIORITY_HIGH_ACCURACY, cancellation.token)
                     .addOnSuccessListener { loc ->
+                        if (currentLocationCancellation !== cancellation) {
+                            return@addOnSuccessListener
+                        }
+                        currentLocationCancellation = null
                         if (loc != null) {
-                            Log.d(TAG, "getCurrentLocation: ${loc.latitude},${loc.longitude} (acc ${loc.accuracy}m)")
-                            location.value = loc
+                            Log.d(TAG, "getCurrentLocation returned (acc ${loc.accuracy}m)")
+                            publishIfFresh(loc)
                         } else {
                             Log.i(TAG, "getCurrentLocation returned null")
                         }
                     }
-                    .addOnFailureListener { Log.w(TAG, "getCurrentLocation failed", it) }
-            }.onFailure { Log.w(TAG, "getCurrentLocation call threw", it) }
+                    .addOnFailureListener {
+                        if (currentLocationCancellation !== cancellation) {
+                            return@addOnFailureListener
+                        }
+                        currentLocationCancellation = null
+                        Log.w(TAG, "getCurrentLocation failed", it)
+                    }
+            }.onFailure {
+                if (currentLocationCancellation === cancellation) {
+                    currentLocationCancellation = null
+                    cancellation.cancel()
+                }
+                Log.w(TAG, "getCurrentLocation call threw", it)
+            }
             runCatching {
                 client.requestLocationUpdates(request, callback, Looper.getMainLooper())
             }.onFailure { Log.w(TAG, "requestLocationUpdates threw", it) }
         }
         fun stop() {
+            isStarted = false
+            cancelCurrentLocationRequest()
+            clearLocation()
             Log.i(TAG, "stopping fused location updates")
             client.removeLocationUpdates(callback)
         }
@@ -136,7 +190,7 @@ internal fun rememberUserLocation(hasPermission: Boolean): State<Location?> {
  * the old version silently did nothing when lastLocation was null.
  */
 @SuppressLint("MissingPermission")
-@Suppress("LongParameterList")
+@Suppress("LongParameterList", "CognitiveComplexMethod")
 internal fun recenterOnUser(
     map: MapLibreMap?,
     context: Context,
@@ -145,42 +199,48 @@ internal fun recenterOnUser(
     snackbarHostState: SnackbarHostState,
     locatingMessage: String,
     unavailableMessage: String,
-) {
-    if (map == null) {
-        Log.w(TAG, "recenter: map not ready")
-        return
-    }
-    val hasPermission = ContextCompat.checkSelfPermission(
-        context, Manifest.permission.ACCESS_FINE_LOCATION,
-    ) == PackageManager.PERMISSION_GRANTED
-    if (!hasPermission) {
-        Log.w(TAG, "recenter: ACCESS_FINE_LOCATION not granted")
-        return
+): RecenterRequest {
+    if (map == null || !context.hasForegroundLocationPermission()) {
+        Log.w(TAG, "recenter: map not ready or foreground location permission unavailable")
+        return NoOpRecenterRequest
     }
 
-    if (cached != null) {
-        Log.d(TAG, "recenter: using cached fix ${cached.latitude},${cached.longitude}")
+    if (cached != null && isLocationFixFresh(cached.time, System.currentTimeMillis())) {
+        Log.d(TAG, "recenter: using fresh cached fix")
         map.animateToLatLng(cached.latitude, cached.longitude)
-        return
+        return NoOpRecenterRequest
     }
     // No fix yet — request a fresh one with feedback.
     Log.i(TAG, "recenter: no cached fix, requesting fresh getCurrentLocation")
     scope.launch { snackbarHostState.showSnackbar(locatingMessage) }
     val client = LocationServices.getFusedLocationProviderClient(context)
-    client.getCurrentLocation(Priority.PRIORITY_HIGH_ACCURACY, null)
+    val cancellation = CancellationTokenSource()
+    var active = true
+    client.getCurrentLocation(Priority.PRIORITY_HIGH_ACCURACY, cancellation.token)
         .addOnSuccessListener { location ->
-            if (location != null) {
-                Log.d(TAG, "recenter: got fix ${location.latitude},${location.longitude}")
+            if (!active) return@addOnSuccessListener
+            active = false
+            if (location != null && isLocationFixFresh(location.time, System.currentTimeMillis())) {
+                Log.d(TAG, "recenter: got fresh fix")
                 map.animateToLatLng(location.latitude, location.longitude)
             } else {
-                Log.w(TAG, "recenter: getCurrentLocation returned null")
+                Log.w(TAG, "recenter: getCurrentLocation returned no fresh fix")
                 scope.launch { snackbarHostState.showSnackbar(unavailableMessage) }
             }
         }
         .addOnFailureListener {
+            if (!active) return@addOnFailureListener
+            active = false
             Log.w(TAG, "recenter: getCurrentLocation failed", it)
             scope.launch { snackbarHostState.showSnackbar(unavailableMessage) }
         }
+    return RecenterRequest {
+        if (active) {
+            active = false
+            cancellation.cancel()
+            Log.d(TAG, "fused recenter request cancelled by screen owner")
+        }
+    }
 }
 
 private fun MapLibreMap.animateToLatLng(lat: Double, lon: Double) {

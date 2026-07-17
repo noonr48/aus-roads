@@ -46,7 +46,7 @@ fun RouteMapOverlay(
             source.setGeoJson(featureCollection)
         } else {
             style.addSource(GeoJsonSource(ROUTE_SOURCE_ID, featureCollection))
-            style.addLayer(
+            style.addLayerBelowUser(
                 LineLayer(ROUTE_LAYER_ID, ROUTE_SOURCE_ID)
                     .withProperties(
                         PropertyFactory.lineColor(Color.parseColor("#2196F3")),

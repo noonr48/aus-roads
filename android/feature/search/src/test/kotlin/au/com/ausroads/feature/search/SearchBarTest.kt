@@ -68,4 +68,15 @@ class SearchBarTest {
         val suburbGroup = grouped.first { it.first == "suburb" }
         assertThat(suburbGroup.second).hasSize(2)
     }
+
+    @Test
+    fun `result subtitles distinguish repeated names by coordinates`() {
+        val first = SearchResult("IGA", "poi", "shop", -34.9285, 138.6007)
+        val second = SearchResult("IGA", "poi", "shop", -34.9012, 138.6123)
+
+        assertThat(searchResultSubtitle(first)).isEqualTo(
+            "Poi \u00b7 shop \u00b7 34.9285\u00b0 S, 138.6007\u00b0 E",
+        )
+        assertThat(searchResultSubtitle(second)).isNotEqualTo(searchResultSubtitle(first))
+    }
 }

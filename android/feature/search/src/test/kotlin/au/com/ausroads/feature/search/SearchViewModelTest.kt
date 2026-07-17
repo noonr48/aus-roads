@@ -5,11 +5,16 @@ import au.com.ausroads.offline.search.SearchRepository
 import au.com.ausroads.offline.search.SearchResult
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.ExperimentalCoroutinesApi
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.test.StandardTestDispatcher
 import kotlinx.coroutines.test.advanceUntilIdle
+import kotlinx.coroutines.test.advanceTimeBy
 import kotlinx.coroutines.test.resetMain
+import kotlinx.coroutines.test.runCurrent
 import kotlinx.coroutines.test.runTest
 import kotlinx.coroutines.test.setMain
+import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.StateFlow
 import org.junit.After
 import org.junit.Before
 import org.junit.Test
@@ -68,11 +73,13 @@ class SearchViewModelTest {
     }
 
     @Test
-    fun `onResultSelected deactivates search`() = runTest {
+    fun `onResultSelected deactivates and dismisses search`() = runTest {
         viewModel.onActiveChange(true)
+        viewModel.onQueryChange("Sydney")
         val result = SearchResult("Sydney", "city", null, -33.86, 151.20)
         viewModel.onResultSelected(result)
         assertThat(viewModel.isActive.value).isFalse()
+        assertThat(viewModel.query.value).isEmpty()
     }
 
     @Test
@@ -96,6 +103,49 @@ class SearchViewModelTest {
     }
 
     @Test
+    fun `nonblank query edit immediately clears old results and enters pending state`() = runTest {
+        repository.resultsByQuery["Old"] = listOf(
+            SearchResult("Old result", "place", null, -34.0, 138.0),
+        )
+        viewModel.onQueryChange("Old")
+        advanceUntilIdle()
+        assertThat(viewModel.results.value.map { it.name }).containsExactly("Old result")
+
+        viewModel.onQueryChange("New")
+
+        assertThat(viewModel.query.value).isEqualTo("New")
+        assertThat(viewModel.results.value).isEmpty()
+        assertThat(viewModel.isSearching.value).isTrue()
+        assertThat(viewModel.searchFailed.value).isFalse()
+        assertThat(viewModel.searchUnavailable.value).isFalse()
+    }
+
+    @Test
+    fun `old query finishing inside new debounce cannot republish stale results`() = runTest {
+        repository.resultsByQuery["Old"] = listOf(
+            SearchResult("Old result", "place", null, -34.0, 138.0),
+        )
+        repository.resultsByQuery["New"] = listOf(
+            SearchResult("New result", "place", null, -35.0, 139.0),
+        )
+        repository.delayByQuery["Old"] = 100L
+
+        viewModel.onQueryChange("Old")
+        advanceTimeBy(301L)
+        runCurrent()
+        viewModel.onQueryChange("New")
+        advanceTimeBy(101L)
+        runCurrent()
+
+        assertThat(viewModel.results.value).isEmpty()
+        assertThat(viewModel.isSearching.value).isTrue()
+
+        advanceUntilIdle()
+        assertThat(viewModel.results.value.map { it.name }).containsExactly("New result")
+        assertThat(viewModel.isSearching.value).isFalse()
+    }
+
+    @Test
     fun `search failure surfaces error state and clears results`() = runTest {
         repository.throwOnSearch = true
         viewModel.onQueryChange("Adelaide")
@@ -104,16 +154,76 @@ class SearchViewModelTest {
         assertThat(viewModel.results.value).isEmpty()
         assertThat(viewModel.isSearching.value).isFalse()
     }
+
+    @Test
+    fun `unavailable index surfaces actionable state`() = runTest {
+        repository.ready = false
+
+        viewModel.onQueryChange("Adelaide")
+        advanceUntilIdle()
+
+        assertThat(viewModel.searchUnavailable.value).isTrue()
+        assertThat(viewModel.results.value).isEmpty()
+    }
+
+    @Test
+    fun `current query reruns when background index initialization completes`() = runTest {
+        repository.ready = false
+        viewModel.onQueryChange("Adelaide")
+        advanceUntilIdle()
+        assertThat(viewModel.searchUnavailable.value).isTrue()
+
+        repository.stubbedResults = listOf(
+            SearchResult("Adelaide", "city", null, -34.9285, 138.6007),
+        )
+        repository.ready = true
+        advanceUntilIdle()
+
+        assertThat(viewModel.searchUnavailable.value).isFalse()
+        assertThat(viewModel.results.value.map { it.name }).containsExactly("Adelaide")
+    }
+
+    @Test
+    fun `new query cancels a slower old query`() = runTest {
+        repository.resultsByQuery["Old"] = listOf(
+            SearchResult("Old result", "place", null, -34.0, 138.0),
+        )
+        repository.resultsByQuery["New"] = listOf(
+            SearchResult("New result", "place", null, -35.0, 139.0),
+        )
+        repository.delayByQuery["Old"] = 1_000L
+
+        viewModel.onQueryChange("Old")
+        advanceTimeBy(301L)
+        viewModel.onQueryChange("New")
+        advanceUntilIdle()
+
+        assertThat(viewModel.query.value).isEqualTo("New")
+        assertThat(viewModel.results.value.map { it.name }).containsExactly("New result")
+    }
 }
 
 private class FakeSearchRepository : SearchRepository {
 
     var stubbedResults: List<SearchResult> = emptyList()
+    val resultsByQuery: MutableMap<String, List<SearchResult>> = mutableMapOf()
+    val delayByQuery: MutableMap<String, Long> = mutableMapOf()
     var throwOnSearch: Boolean = false
+    private val readinessState = MutableStateFlow(true)
+    var ready: Boolean = true
+        set(value) {
+            field = value
+            readinessState.value = value
+        }
+
+    override val isReady: Boolean
+        get() = ready
+    override val readiness: StateFlow<Boolean> = readinessState
 
     override suspend fun search(query: String, limit: Int, kind: String?): List<SearchResult> {
         if (throwOnSearch) throw RuntimeException("simulated index failure")
-        return stubbedResults.take(limit)
+        delayByQuery[query]?.let { delay(it) }
+        return resultsByQuery[query].orEmpty().ifEmpty { stubbedResults }.take(limit)
     }
 
     override suspend fun nearest(

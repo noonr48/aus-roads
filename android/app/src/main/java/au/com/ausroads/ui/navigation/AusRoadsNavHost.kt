@@ -14,8 +14,12 @@ import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.setValue
 import androidx.hilt.navigation.compose.hiltViewModel
 import androidx.navigation.NavHostController
+import androidx.navigation.NavGraph.Companion.findStartDestination
 import androidx.navigation.compose.NavHost
 import androidx.navigation.compose.composable
 import androidx.compose.runtime.Composable
@@ -29,11 +33,13 @@ import au.com.ausroads.ui.pins.PinListViewModel
 import au.com.ausroads.ui.pins.PinsScreen
 import au.com.ausroads.ui.settings.SettingsScreen
 import au.com.ausroads.ui.settings.SettingsViewModel
+import au.com.ausroads.ui.settings.MapPackViewModel
 import au.com.ausroads.feature.search.SearchViewModel
 import au.com.ausroads.feature.traffic.TrafficViewModel
 import au.com.ausroads.feature.navigation.NavigationViewModel
 import au.com.ausroads.ui.map.RouteViewModel
 import au.com.ausroads.ui.nearby.NearbyScreen
+import au.com.ausroads.offline.search.SearchResult
 
 sealed class AusRoadsDestination(
     val route: String,
@@ -78,12 +84,16 @@ sealed class AusRoadsDestination(
 @Composable
 fun AusRoadsNavHost(
     navController: NavHostController,
-    startDestination: String,
     modifier: Modifier = Modifier,
 ) {
+    var requestedMapTarget by remember { mutableStateOf<SearchResult?>(null) }
+
     NavHost(
         navController = navController,
-        startDestination = startDestination,
+        // A navigation graph's start must be immutable. Following the current
+        // route here rebuilt the graph on every tab switch and could tear down
+        // the native map surface while MapLibre was still initialising.
+        startDestination = AusRoadsDestination.Map.route,
         modifier = modifier,
     ) {
         composable(AusRoadsDestination.Map.route) {
@@ -94,8 +104,11 @@ fun AusRoadsNavHost(
             val navigationViewModel: NavigationViewModel = hiltViewModel()
             val routeHistoryViewModel: RouteHistoryViewModel = hiltViewModel()
             val routeViewModel: RouteViewModel = hiltViewModel()
+            val mapPackViewModel: MapPackViewModel = hiltViewModel()
             val settings by settingsViewModel.settings.collectAsState()
             val pins by pinsViewModel.pins.collectAsState()
+            val installedPack by mapPackViewModel.renderInstalled.collectAsState()
+            val installedStateInitialized by mapPackViewModel.renderStateInitialized.collectAsState()
             // Honour the TTS toggle: voice guidance previously spoke regardless.
             LaunchedEffect(settings.ttsEnabled) {
                 navigationViewModel.setTtsEnabled(settings.ttsEnabled)
@@ -115,13 +128,14 @@ fun AusRoadsNavHost(
                 pins = pins,
                 // Named args: addPinAt(longitude, latitude, ...) — passing
                 // positionally here previously transposed every dropped pin.
-                onSavePin = { lat, lon, name, color, onSaved ->
+                onSavePin = { lat, lon, name, color, onSaved, onError ->
                     pinsViewModel.addPinAt(
                         latitude = lat,
                         longitude = lon,
                         name = name,
                         color = color,
                         onSaved = onSaved,
+                        onError = onError,
                     )
                 },
                 onDeletePin = { pin -> pinsViewModel.delete(pin) },
@@ -141,10 +155,25 @@ fun AusRoadsNavHost(
                         avoidFerries = opts.avoidFerries,
                     )
                 },
+                activePack = installedPack,
+                packStateInitialized = installedStateInitialized,
+                requestedMapTarget = requestedMapTarget,
+                onRequestedMapTargetConsumed = { requestedMapTarget = null },
             )
         }
         composable(AusRoadsDestination.Nearby.route) {
-            NearbyScreen()
+            NearbyScreen(
+                onViewOnMap = { result ->
+                    requestedMapTarget = result
+                    navController.navigate(AusRoadsDestination.Map.route) {
+                        popUpTo(navController.graph.findStartDestination().id) {
+                            saveState = true
+                        }
+                        launchSingleTop = true
+                        restoreState = true
+                    }
+                },
+            )
         }
         composable(AusRoadsDestination.Pins.route) {
             PinsScreen()

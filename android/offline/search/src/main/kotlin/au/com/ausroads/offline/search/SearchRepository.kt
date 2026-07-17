@@ -1,6 +1,17 @@
 package au.com.ausroads.offline.search
 
+import kotlinx.coroutines.flow.Flow
+import kotlinx.coroutines.flow.flowOf
+
 interface SearchRepository {
+    /** Whether a usable search index is currently open. Test/fake repositories default to ready. */
+    val isReady: Boolean
+        get() = true
+
+    /** Emits again when a production repository closes or opens a pack. */
+    val readiness: Flow<Boolean>
+        get() = flowOf(isReady)
+
     /**
      * Search for features matching the given query.
      * Uses FTS5 prefix matching: "cedu" matches "Ceduna", "Ceduna 5690", etc.

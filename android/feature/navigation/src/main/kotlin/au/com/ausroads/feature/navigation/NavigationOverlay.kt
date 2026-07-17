@@ -45,6 +45,25 @@ fun NavigationOverlay(
 
     when (val s = state) {
         is NavigationState.Idle -> {}
+        is NavigationState.PreciseLocationRequired -> {
+            LocationRequiredBanner(
+                onStop = {
+                    viewModel.stopNavigation()
+                    onStopNavigation()
+                },
+                modifier = modifier,
+            )
+        }
+        is NavigationState.LocationUnavailable -> {
+            LocationUnavailableBanner(
+                onRetry = viewModel::retryLocation,
+                onStop = {
+                    viewModel.stopNavigation()
+                    onStopNavigation()
+                },
+                modifier = modifier,
+            )
+        }
         is NavigationState.Navigating -> {
             Column(modifier = modifier) {
                 if (batteryWarning) {
@@ -89,6 +108,72 @@ fun NavigationOverlay(
                 },
                 modifier = modifier,
             )
+        }
+    }
+}
+
+@Composable
+private fun LocationUnavailableBanner(
+    onRetry: () -> Unit,
+    onStop: () -> Unit,
+    modifier: Modifier = Modifier,
+) {
+    Box(
+        modifier = modifier
+            .fillMaxWidth()
+            .padding(16.dp),
+    ) {
+        Column(
+            modifier = Modifier
+                .clip(RoundedCornerShape(12.dp))
+                .background(MaterialTheme.colorScheme.errorContainer.copy(alpha = 0.95f))
+                .padding(16.dp),
+            verticalArrangement = Arrangement.spacedBy(8.dp),
+        ) {
+            Text(
+                text = stringResource(R.string.nav_location_unavailable),
+                style = MaterialTheme.typography.bodyMedium,
+                color = MaterialTheme.colorScheme.onErrorContainer,
+            )
+            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                TextButton(onClick = onRetry) {
+                    Text(stringResource(R.string.nav_retry_location))
+                }
+                TextButton(onClick = onStop) {
+                    Text(stringResource(R.string.nav_end))
+                }
+            }
+        }
+    }
+}
+
+@Composable
+private fun LocationRequiredBanner(
+    onStop: () -> Unit,
+    modifier: Modifier = Modifier,
+) {
+    Box(
+        modifier = modifier
+            .fillMaxWidth()
+            .padding(16.dp),
+    ) {
+        Row(
+            modifier = Modifier
+                .clip(RoundedCornerShape(12.dp))
+                .background(MaterialTheme.colorScheme.errorContainer.copy(alpha = 0.95f))
+                .padding(16.dp),
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.spacedBy(8.dp),
+        ) {
+            Text(
+                text = stringResource(R.string.nav_precise_location_required),
+                style = MaterialTheme.typography.bodyMedium,
+                color = MaterialTheme.colorScheme.onErrorContainer,
+                modifier = Modifier.weight(1f),
+            )
+            TextButton(onClick = onStop) {
+                Text(stringResource(R.string.nav_done))
+            }
         }
     }
 }

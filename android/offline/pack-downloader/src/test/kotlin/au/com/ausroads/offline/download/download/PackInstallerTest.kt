@@ -4,6 +4,7 @@ import android.content.Context
 import au.com.ausroads.core.model.Bbox
 import au.com.ausroads.core.model.Region
 import au.com.ausroads.offline.download.eviction.EvictionManager
+import au.com.ausroads.offline.download.state.InstalledPack
 import au.com.ausroads.offline.download.state.PackStateStore
 import au.com.ausroads.offline.pack.OsmSource
 import au.com.ausroads.offline.pack.PackComponents
@@ -143,6 +144,83 @@ class PackInstallerTest {
         assertThat(baseDir.exists()).isTrue()
         assertThat(File(baseDir, "current.json").exists()).isTrue()
         assertThat(keepDir.exists()).isTrue()
+    }
+
+    @Test
+    fun `same-version repair publishes a distinct generation and preserves prior bytes`() = runTest {
+        val liveDir = File(baseDir, "v1-old").apply { mkdirs() }
+        File(liveDir, "tiles.mbtiles").writeText("old-live-bytes")
+        packStateStore.writeCurrent(
+            InstalledPack(
+                version = "1",
+                regionCode = "AU-SA",
+                installedAt = Instant.parse("2026-05-01T00:00:00Z"),
+                totalSizeBytes = 1L,
+                tilesPath = "tiles.mbtiles",
+                manifestSha256 = "old",
+                directoryName = liveDir.name,
+            ),
+        )
+        val stagingDir = File(baseDir, ".install-v1").apply { mkdirs() }
+        val replacement = File(stagingDir, "tiles.mbtiles").apply { writeText("repaired-bytes") }
+        val replacementDir = File(baseDir, "v1-repair")
+        val manifest = manifestWithTilesHash(sha256(replacement))
+
+        val outcome = installer.finalize(
+            installDir = stagingDir,
+            finalDir = replacementDir,
+            packVersion = "1",
+            manifest = manifest,
+            manifestJson = "{}",
+            zipLength = 0L,
+        )
+
+        assertThat(outcome).isEqualTo(PackInstaller.Outcome.Installed)
+        assertThat(File(liveDir, "tiles.mbtiles").readText()).isEqualTo("old-live-bytes")
+        assertThat(File(replacementDir, "tiles.mbtiles").readText()).isEqualTo("repaired-bytes")
+        assertThat(packStateStore.readCurrent()?.directoryName).isEqualTo("v1-repair")
+        assertThat(packStateStore.readPrevious()?.directoryName).isEqualTo("v1-old")
+        assertThat(stagingDir.exists()).isFalse()
+    }
+
+    @Test
+    fun `verified replacement refuses to overwrite an occupied generation`() = runTest {
+        val occupied = File(baseDir, "v1-live").apply { mkdirs() }
+        File(occupied, "tiles.mbtiles").writeText("old-live-bytes")
+        val staging = File(baseDir, ".install-v1").apply { mkdirs() }
+        val replacement = File(staging, "tiles.mbtiles").apply { writeText("replacement") }
+
+        val outcome = installer.finalize(
+            installDir = staging,
+            finalDir = occupied,
+            packVersion = "1",
+            manifest = manifestWithTilesHash(sha256(replacement)),
+            manifestJson = "{}",
+            zipLength = 0L,
+        )
+
+        assertThat(outcome).isInstanceOf(PackInstaller.Outcome.InstallationFailed::class.java)
+        assertThat(File(occupied, "tiles.mbtiles").readText()).isEqualTo("old-live-bytes")
+    }
+
+    @Test
+    fun `failed same-version verification preserves live bytes`() = runTest {
+        val liveDir = File(baseDir, "v1").apply { mkdirs() }
+        File(liveDir, "tiles.mbtiles").writeText("old-live-bytes")
+        val stagingDir = File(baseDir, ".install-v1").apply { mkdirs() }
+        File(stagingDir, "tiles.mbtiles").writeText("corrupt-repair")
+
+        val outcome = installer.finalize(
+            installDir = stagingDir,
+            finalDir = liveDir,
+            packVersion = "1",
+            manifest = manifestWithTilesHash("deadbeef"),
+            manifestJson = "{}",
+            zipLength = 0L,
+        )
+
+        assertThat(outcome).isInstanceOf(PackInstaller.Outcome.VerificationFailed::class.java)
+        assertThat(File(liveDir, "tiles.mbtiles").readText()).isEqualTo("old-live-bytes")
     }
 
     private fun manifestWithTilesHash(hash: String) = PackManifest(

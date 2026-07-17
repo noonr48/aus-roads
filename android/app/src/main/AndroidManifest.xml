@@ -7,7 +7,8 @@
       via a side-loaded URL handled by the in-app downloader only after the user
       explicitly taps "Download map pack" (which switches the manifest via a build
       flag in v0.1.1+).
-    - No ACCESS_*_LOCATION. No GPS.
+    - Foreground location is opt-in and processed on-device for the user marker,
+      Nearby, and navigation. No background location permission.
     - No Google Play Services. No analytics. No crash reporter.
     - v0.2+ flips the INTERNET flag on via a build variant or runtime feature
       switch — see /home/benbi/Apps/aus-roads/docs/adr/0002-tech-stack.md.
@@ -15,9 +16,9 @@
 <manifest xmlns:android="http://schemas.android.com/apk/res/android"
     xmlns:tools="http://schemas.android.com/tools">
 
-    <!-- Location stripped on all flavors — safety net for transitive deps -->
-    <uses-permission android:name="android.permission.ACCESS_COARSE_LOCATION" tools:node="remove" />
-    <uses-permission android:name="android.permission.ACCESS_FINE_LOCATION" tools:node="remove" />
+    <!-- Requested together at runtime on Android 12+; approximate is accepted. -->
+    <uses-permission android:name="android.permission.ACCESS_COARSE_LOCATION" />
+    <uses-permission android:name="android.permission.ACCESS_FINE_LOCATION" />
 
     <application
         android:name=".AusRoadsApp"

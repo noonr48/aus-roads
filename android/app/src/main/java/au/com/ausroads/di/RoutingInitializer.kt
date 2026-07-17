@@ -2,6 +2,10 @@ package au.com.ausroads.di
 
 import android.content.Context
 import android.util.Log
+import au.com.ausroads.io.readCurrentInstalledPack
+import au.com.ausroads.offline.download.state.InstalledPack
+import au.com.ausroads.offline.download.state.installDirectoryName
+import au.com.ausroads.routing.engine.valhalla.PreparedRoutingEngine
 import au.com.ausroads.routing.engine.valhalla.ValhallaRoutingEngine
 import dagger.hilt.android.qualifiers.ApplicationContext
 import java.io.File
@@ -24,38 +28,53 @@ class RoutingInitializer @Inject constructor(
     @ApplicationContext private val context: Context,
     private val routingEngine: ValhallaRoutingEngine,
 ) {
-    fun initialize() {
-        val tar = resolveRoutingTar()
-        if (tar == null) {
-            Log.i(TAG, "No routing tiles installed; directions unavailable until a routing pack is installed")
-            return
-        }
-        routingEngine.initialize(tar.absolutePath)
-        Log.i(TAG, "Routing initialized from ${tar.absolutePath} (${tar.length()} bytes)")
+    fun initialize(
+        installedDescriptor: InstalledPack? = readCurrentInstalledPack(context.filesDir),
+    ) {
+        prepare(installedDescriptor).use(::activate)
     }
 
-    private fun resolveRoutingTar(): File? {
-        val base = File(context.filesDir, MAPPACK_DIR)
-        val conventional = File(base, "routing/$TAR_NAME")
-        if (conventional.isFile && conventional.length() > 0) return conventional
+    /** Construct a candidate without clearing the currently usable routing generation. */
+    fun prepare(
+        installedDescriptor: InstalledPack? = readCurrentInstalledPack(context.filesDir),
+    ): PreparedRoutingEngine {
+        val routingPath = installedDescriptor?.routingPath?.takeIf(String::isNotBlank)
+        if (routingPath == null) {
+            Log.i(TAG, "Prepared generation has no routing component")
+            return routingEngine.prepare(null)
+        }
+        val tar = checkNotNull(resolveInstalledRoutingTar(context.filesDir, installedDescriptor)) {
+            "Installed map pack declares missing routing tiles: $routingPath"
+        }
+        Log.i(TAG, "Preparing routing from ${tar.absolutePath} (${tar.length()} bytes)")
+        return routingEngine.prepare(tar.absolutePath)
+    }
 
-        // Fall back to the latest versioned pack dir's routing component.
-        val latest = base.listFiles()
-            ?.filter { it.isDirectory && it.name.startsWith("v") }
-            ?.maxByOrNull { it.name }
-            ?: return null
-        val candidates = listOf(
-            File(latest, "routing/$TAR_NAME"),
-            File(latest, TAR_NAME),
-        )
-        candidates.firstOrNull { it.isFile && it.length() > 0 }?.let { return it }
-        return File(latest, "routing").listFiles()
-            ?.firstOrNull { it.isFile && it.extension == "tar" && it.length() > 0 }
+    /** Non-throwing commit of a candidate that has already completed native construction. */
+    fun activate(prepared: PreparedRoutingEngine) {
+        routingEngine.activate(prepared)
     }
 
     private companion object {
         private const val TAG = "RoutingInitializer"
-        private const val MAPPACK_DIR = "mappacks/au-sa"
-        private const val TAR_NAME = "valhalla_tiles.tar"
     }
 }
+
+/** Select routing from the same current.json generation as map and search. */
+internal fun resolveInstalledRoutingTar(filesDir: File): File? {
+    val base = File(filesDir, MAPPACK_DIR)
+    val current = File(base, CURRENT_JSON)
+    if (!current.isFile) return null
+    val descriptor = readCurrentInstalledPack(filesDir) ?: return null
+    return resolveInstalledRoutingTar(filesDir, descriptor)
+}
+
+private fun resolveInstalledRoutingTar(filesDir: File, descriptor: InstalledPack): File? {
+    val base = File(filesDir, MAPPACK_DIR)
+    val routingPath = descriptor.routingPath?.takeIf(String::isNotBlank) ?: return null
+    return File(File(base, descriptor.installDirectoryName()), routingPath)
+        .takeIf { it.isFile && it.length() > 0 }
+}
+
+private const val MAPPACK_DIR = "mappacks/au-sa"
+private const val CURRENT_JSON = "current.json"

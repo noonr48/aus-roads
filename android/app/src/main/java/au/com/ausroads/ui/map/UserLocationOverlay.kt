@@ -6,8 +6,10 @@ import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
 import org.maplibre.android.maps.MapLibreMap
+import org.maplibre.android.maps.Style
 import org.maplibre.android.style.expressions.Expression
 import org.maplibre.android.style.layers.CircleLayer
+import org.maplibre.android.style.layers.Layer
 import org.maplibre.android.style.layers.PropertyFactory
 import org.maplibre.android.style.sources.GeoJsonSource
 import org.maplibre.geojson.Feature
@@ -15,7 +17,7 @@ import org.maplibre.geojson.FeatureCollection
 import org.maplibre.geojson.Point
 
 private const val USER_SOURCE_ID = "user-location"
-private const val USER_HALO_LAYER = "user-location-halo"
+internal const val USER_HALO_LAYER = "user-location-halo"
 private const val USER_DOT_LAYER = "user-location-dot"
 
 // One blue, reserved for "you" — distinct from saved-pin green and traffic hues.
@@ -50,7 +52,7 @@ fun UserLocationOverlay(
             return@LaunchedEffect
         }
 
-        Log.d(TAG, "drawing blue dot at $lat,$lon")
+        Log.d(TAG, "drawing blue location dot")
         val collection = FeatureCollection.fromFeatures(
             listOf(Feature.fromGeometry(Point.fromLngLat(lon, lat))),
         )
@@ -87,4 +89,10 @@ fun UserLocationOverlay(
             }
         }
     }
+}
+
+/** Keep every later-added overlay below the user puck when it exists. */
+internal fun Style.addLayerBelowUser(layer: Layer) {
+    if (getLayer(USER_HALO_LAYER) != null) addLayerBelow(layer, USER_HALO_LAYER)
+    else addLayer(layer)
 }

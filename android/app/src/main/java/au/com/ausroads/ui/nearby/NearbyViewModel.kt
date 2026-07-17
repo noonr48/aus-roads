@@ -35,6 +35,7 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.flow.distinctUntilChanged
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
@@ -58,6 +59,7 @@ data class NearbyUiState(
     val results: List<NearbyResult> = emptyList(),
     val isLoading: Boolean = false,
     val emergency: EmergencyInfo? = null,
+    val searchUnavailable: Boolean = false,
 )
 
 @HiltViewModel
@@ -87,9 +89,21 @@ class NearbyViewModel @Inject constructor(
      * plain Int needs no synchronisation.
      */
     private var selectionToken = 0
+    private var emergencyToken = 0
 
     init {
-        loadEmergency()
+        viewModelScope.launch {
+            searchRepository.readiness.distinctUntilChanged().collect { ready ->
+                if (ready) {
+                    val pendingCategory = _uiState.value.selected
+                    _uiState.update { it.copy(searchUnavailable = false) }
+                    loadEmergency()
+                    if (pendingCategory != null) selectCategory(pendingCategory)
+                } else {
+                    _uiState.update { it.copy(searchUnavailable = true) }
+                }
+            }
+        }
     }
 
     /**
@@ -101,11 +115,22 @@ class NearbyViewModel @Inject constructor(
         // Invalidate any in-flight category query so a late result can't
         // repopulate the list against the old reference after we've cleared it.
         selectionToken++
+        val selectedCategory = _uiState.value.selected
         reference = GeoPoint(longitude = longitude, latitude = latitude)
         _uiState.update {
-            it.copy(selected = null, results = emptyList(), emergency = null)
+            it.copy(results = emptyList(), emergency = null)
         }
         loadEmergency()
+        selectedCategory?.let(::selectCategory)
+    }
+
+    /** Restore the honest fallback after a device fix is revoked or expires. */
+    fun resetReference() {
+        if (reference == ADELAIDE_CBD) return
+        setReference(
+            latitude = ADELAIDE_CBD.latitude,
+            longitude = ADELAIDE_CBD.longitude,
+        )
     }
 
     /**
@@ -115,8 +140,21 @@ class NearbyViewModel @Inject constructor(
      */
     @Suppress("TooGenericExceptionCaught") // search.db can throw various SQLite errors; fail-safe to empty
     fun selectCategory(category: PoiCategory) {
+        // Invalidate an older in-flight query even when this selection has to
+        // wait for the repository to become ready.
         val token = ++selectionToken
-        _uiState.update { it.copy(selected = category, isLoading = true) }
+        if (!searchRepository.isReady) {
+            _uiState.update {
+                it.copy(
+                    selected = category,
+                    results = emptyList(),
+                    isLoading = false,
+                    searchUnavailable = true,
+                )
+            }
+            return
+        }
+        _uiState.update { it.copy(selected = category, isLoading = true, searchUnavailable = false) }
         viewModelScope.launch {
             try {
                 val mapped = withContext(workDispatcher) {
@@ -149,7 +187,9 @@ class NearbyViewModel @Inject constructor(
                 // A corrupt/missing pack must not crash the screen.
                 Log.w(TAG, "Nearby category query failed", e)
                 if (token == selectionToken) {
-                    _uiState.update { it.copy(results = emptyList()) }
+                    _uiState.update {
+                        it.copy(results = emptyList(), searchUnavailable = true)
+                    }
                 }
             } finally {
                 if (token == selectionToken) {
@@ -166,10 +206,12 @@ class NearbyViewModel @Inject constructor(
      */
     @Suppress("TooGenericExceptionCaught") // best-effort emergency lookup; never crash the screen
     fun loadEmergency() {
+        val token = ++emergencyToken
+        val referenceAtStart = reference
         viewModelScope.launch {
             val info = try {
-                val hospital = nearestSingle(PoiCategory.HOSPITAL)
-                val police = nearestSingle(PoiCategory.POLICE)
+                val hospital = nearestSingle(PoiCategory.HOSPITAL, referenceAtStart)
+                val police = nearestSingle(PoiCategory.POLICE, referenceAtStart)
                 EmergencyInfo(hospital = hospital, police = police)
             } catch (e: CancellationException) {
                 throw e
@@ -177,17 +219,22 @@ class NearbyViewModel @Inject constructor(
                 Log.w(TAG, "Nearby emergency lookup failed", e)
                 EmergencyInfo(hospital = null, police = null)
             }
-            _uiState.update { it.copy(emergency = info) }
+            if (token == emergencyToken) {
+                _uiState.update { it.copy(emergency = info) }
+            }
         }
     }
 
     /** Nearest single POI of [category] with its distance, or null. */
-    private suspend fun nearestSingle(category: PoiCategory): NearbyResult? =
+    private suspend fun nearestSingle(
+        category: PoiCategory,
+        referencePoint: GeoPoint,
+    ): NearbyResult? =
         withContext(workDispatcher) {
             searchRepository
                 .nearestByCategory(
-                    latitude = reference.latitude,
-                    longitude = reference.longitude,
+                    latitude = referencePoint.latitude,
+                    longitude = referencePoint.longitude,
                     category = category,
                     limit = 1,
                 )
@@ -196,7 +243,7 @@ class NearbyViewModel @Inject constructor(
                     NearbyResult(
                         result = r,
                         distanceMeters = MeasureGeometry.haversineMeters(
-                            reference,
+                            referencePoint,
                             GeoPoint(longitude = r.longitude, latitude = r.latitude),
                         ),
                     )

@@ -86,7 +86,7 @@ fun TrafficMapOverlay(
             )
 
             // Points: roadworks, incidents
-            style.addLayer(
+            style.addLayerBelowUser(
                 CircleLayer(POINTS_LAYER, SOURCE_ID)
                     .withProperties(
                         PropertyFactory.circleRadius(8f),
@@ -101,7 +101,7 @@ fun TrafficMapOverlay(
             )
 
             // Lines: closures, detours
-            style.addLayer(
+            style.addLayerBelowUser(
                 LineLayer(LINES_LAYER, SOURCE_ID)
                     .withProperties(
                         PropertyFactory.lineColor(severityColorExpr()),

@@ -5,6 +5,8 @@ import au.com.ausroads.routing.engine.Maneuver
 
 sealed interface NavigationState {
     data object Idle : NavigationState
+    data object PreciseLocationRequired : NavigationState
+    data class LocationUnavailable(val previousState: Navigating) : NavigationState
     data class Navigating(
         val currentManeuver: Maneuver?,
         val nextManeuver: Maneuver?,

@@ -39,11 +39,14 @@ DIST="$ROOT/dist"
 LOGS="$ROOT/logs"
 TODAY="$(date -u +%Y-%m-%d)"
 
+# shellcheck source=bundled-demo-contract.sh
+source "$HERE/bundled-demo-contract.sh"
+
 # Region bounds passed to Planetiler --bounds (minLon,minLat,maxLon,maxLat).
 # Defaults to the Adelaide metro test clip (CBD + foothills + Gulf St Vincent
 # coast, ~55 km x 65 km). Override PACK_BBOX to build another region, e.g. full SA:
 #   PACK_BBOX="129,-38,141,-26"
-PACK_BBOX="${PACK_BBOX:-138.4,-35.2,139,-34.6}"
+PACK_BBOX="${PACK_BBOX:-$BUNDLED_DEMO_BBOX}"
 # Planetiler max heap. The Adelaide clip is fine at 4g; the full-SA water-polygon
 # pass wants more — override e.g. PACK_HEAP=8g for the whole state.
 PACK_HEAP="${PACK_HEAP:-4g}"
@@ -56,7 +59,7 @@ err() { printf '\033[1;31m[build]\033[0m %s\n' "$*" >&2; }
 
 PBF="$CACHE/south-australia-latest.osm.pbf"
 PLANETILER_JAR="$CACHE/planetiler.jar"
-OUT_MBTILES="$DIST/adelaide-test-tiles.mbtiles"
+OUT_MBTILES="$DIST/$BUNDLED_DEMO_TILES"
 
 # ---------------------------------------------------------------------------
 # 1. Fetch the SA extract from Geofabrik
@@ -253,20 +256,37 @@ EOF
 log "wrote $DIST/manifest.json"
 
 # ---------------------------------------------------------------------------
-# 6. Build Valhalla routing tiles (reuse an existing whole-SA graph if present so
+# 6. Build the search index from the same PBF and exact bounds as the tiles.
+#    Packaging a pre-existing dist/search.db made dirty builds silently combine
+#    fresh tiles with stale search data.
+# ---------------------------------------------------------------------------
+
+log "step 6: building matching search index (bounds=$PACK_BBOX)..."
+bash "$HERE/build-search-index.sh" "$PACK_BBOX"
+
+SEARCH_ROWS="$(sqlite3 "$DIST/search.db" 'SELECT count(*) FROM search_meta')"
+SEARCH_POIS="$(sqlite3 "$DIST/search.db" "SELECT count(*) FROM search_meta WHERE kind='poi'")"
+SEARCH_SUPERMARKETS="$(sqlite3 "$DIST/search.db" "SELECT count(*) FROM search_meta WHERE class='shop=supermarket'")"
+(( SEARCH_ROWS >= 1000 )) || { err "search semantic gate: only $SEARCH_ROWS rows"; exit 1; }
+(( SEARCH_POIS >= 100 )) || { err "search semantic gate: only $SEARCH_POIS POIs"; exit 1; }
+(( SEARCH_SUPERMARKETS >= 1 )) || { err "search semantic gate: no supermarkets"; exit 1; }
+log "search semantic gate OK: rows=$SEARCH_ROWS pois=$SEARCH_POIS supermarkets=$SEARCH_SUPERMARKETS"
+
+# ---------------------------------------------------------------------------
+# 7. Build Valhalla routing tiles (reuse an existing whole-SA graph if present so
 #    a tiles-only rebuild doesn't pay the ~10 min Docker Valhalla build).
 # ---------------------------------------------------------------------------
 
 VALHALLA_TAR="$ROOT/valhalla-build/valhalla_tiles.tar"
 if [[ -s "$VALHALLA_TAR" ]]; then
-    log "step 6: reusing existing Valhalla tar ($(du -h "$VALHALLA_TAR" | cut -f1)) -- delete it to force a rebuild"
+    log "step 7: reusing existing Valhalla tar ($(du -h "$VALHALLA_TAR" | cut -f1)) -- delete it to force a rebuild"
 else
-    log "step 6: building Valhalla routing tiles..."
+    log "step 7: building Valhalla routing tiles..."
     bash "$HERE/build-valhalla-tiles.sh"
 fi
 
 # ---------------------------------------------------------------------------
-# 7. Package the built components into a hostable/servable pack artifact.
+# 8. Package the built components into a hostable/servable pack artifact.
 #
 #    Produces dist/latest.json (the served manifest, with REAL tiles+search
 #    sha256/sizes and routing format:"none"), dist/pack.zip, and a copy at
@@ -276,7 +296,7 @@ fi
 #    latest.json. See scripts/package-pack.sh for details (incl. the routing TODO).
 # ---------------------------------------------------------------------------
 
-log "step 7: packaging hostable pack artifact (pack.zip + latest.json)..."
+log "step 8: packaging hostable pack artifact (pack.zip + latest.json)..."
 bash "$HERE/package-pack.sh"
 
 log "DONE. Outputs in $DIST:"

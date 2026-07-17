@@ -65,7 +65,7 @@ See `docs/notes/release-signing.md` for keystore setup and Play Store signing co
 
 ### Build flavors
 
-- `offline` — no INTERNET permission, no network code, pure offline map.
+- `offline` — no INTERNET permission; maps/search/routing and opt-in foreground GPS stay on-device.
 - `withNetwork` — live traffic, congestion data, community reports (requires network).
 
 ## Play Store readiness

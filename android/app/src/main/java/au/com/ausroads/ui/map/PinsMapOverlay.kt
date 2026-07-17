@@ -58,7 +58,7 @@ fun PinsMapOverlay(
             source.setGeoJson(collection)
         } else {
             style.addSource(GeoJsonSource(PINS_SOURCE_ID, collection))
-            style.addLayer(
+            style.addLayerBelowUser(
                 CircleLayer(PINS_POINTS_LAYER, PINS_SOURCE_ID).withProperties(
                     PropertyFactory.circleRadius(10f),
                     // MapLibre 11.5.2 renders a data-driven circleColor from a feature

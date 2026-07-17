@@ -11,7 +11,10 @@
 package au.com.ausroads.ui.map
 
 import android.content.Context
-import org.json.JSONObject
+import au.com.ausroads.io.hasSqliteHeader
+import au.com.ausroads.io.readCurrentInstalledPack
+import au.com.ausroads.offline.download.state.InstalledPack
+import au.com.ausroads.offline.download.state.installDirectoryName
 import java.io.File
 
 object MapPackAvailability {
@@ -20,8 +23,6 @@ object MapPackAvailability {
 
     // Mirrors PackStateStore's layout in the pack-downloader module.
     private const val PACK_BASE_DIR = "mappacks/au-sa"
-    private const val CURRENT_JSON = "current.json"
-    private const val DEFAULT_TILES_PATH = "tiles.mbtiles"
 
     fun hasBundledPack(context: Context): Boolean =
         try {
@@ -39,30 +40,35 @@ object MapPackAvailability {
 
     /**
      * The MBTiles file of the pack installed by the downloader, or null when no
-     * pack is installed or its tiles file is missing. Reads `current.json`
-     * directly (org.json, no extra deps) rather than depending on the
-     * downloader's PackStateStore, which is Hilt-scoped.
+     * pack is installed or its tiles file is missing. Reads the downloader's
+     * canonical `current.json` schema through the shared pack-state decoder.
      */
     fun installedPackMbtiles(context: Context): File? {
+        val descriptor = installedDescriptor(context) ?: return null
+        return installedPackMbtiles(context, descriptor)
+    }
+
+    /** Resolve an explicitly activated descriptor instead of re-reading current.json. */
+    fun installedPackMbtiles(context: Context, descriptor: InstalledPack): File? {
         val baseDir = File(context.filesDir, PACK_BASE_DIR)
-        val currentFile = File(baseDir, CURRENT_JSON)
-        if (!currentFile.exists()) return null
-        val (version, tilesPath) = try {
-            val obj = JSONObject(currentFile.readText())
-            val v = obj.optString("version")
-            val t = obj.optString("tilesPath", DEFAULT_TILES_PATH).ifBlank { DEFAULT_TILES_PATH }
-            v to t
-        } catch (_: Exception) {
-            return null
-        }
-        if (version.isBlank()) return null
-        val mbtiles = File(File(baseDir, "v$version"), tilesPath)
-        return mbtiles.takeIf { it.exists() && it.length() > 0 }
+        val mbtiles = File(File(baseDir, descriptor.installDirectoryName()), descriptor.tilesPath)
+        return mbtiles.takeIf(::hasSqliteHeader)
+    }
+
+    /** Current disk descriptor, used only before the runtime coordinator settles. */
+    fun installedPack(context: Context): InstalledPack? = installedDescriptor(context)
+
+    /** Stable key matching MapPackManager's InstalledPack identity on first composition. */
+    fun installedPackIdentity(context: Context): String? = installedDescriptor(context)?.let {
+        "${it.version}:${it.installedAt}:${it.installDirectoryName()}"
     }
 
     /** True when either a downloaded pack or the bundled asset can render. */
-    fun hasAnyPack(context: Context): Boolean =
-        installedPackMbtiles(context) != null || hasBundledPack(context)
+    fun hasAnyPack(context: Context): Boolean = if (hasInstalledPackDescriptor(context)) {
+        installedPackMbtiles(context) != null
+    } else {
+        hasBundledPack(context)
+    }
 
     /**
      * True when the map is rendering the bundled Adelaide demo tiles because no
@@ -71,5 +77,11 @@ object MapPackAvailability {
      * silent surprise.
      */
     fun isUsingBundledFallback(context: Context): Boolean =
-        installedPackMbtiles(context) == null && hasBundledPack(context)
+        !hasInstalledPackDescriptor(context) && hasBundledPack(context)
+
+    fun hasInstalledPackDescriptor(context: Context): Boolean =
+        installedDescriptor(context) != null
+
+    private fun installedDescriptor(context: Context): InstalledPack? =
+        readCurrentInstalledPack(context.filesDir)
 }

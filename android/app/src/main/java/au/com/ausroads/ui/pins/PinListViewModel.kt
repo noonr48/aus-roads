@@ -9,12 +9,14 @@
  */
 package au.com.ausroads.ui.pins
 
+import android.util.Log
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import au.com.ausroads.data.pins.Pin
 import au.com.ausroads.data.pins.PinRepository
 import dagger.hilt.android.lifecycle.HiltViewModel
 import javax.inject.Inject
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.stateIn
@@ -39,23 +41,32 @@ class PinListViewModel @Inject constructor(
      * is fine here — the StateFlow re-emits on Room write, so the UI updates
      * without blocking the caller.
      */
+    @Suppress("LongParameterList", "TooGenericExceptionCaught") // Room can surface several write failures
     fun addPinAt(
         latitude: Double,
         longitude: Double,
         name: String? = null,
         color: String = "#1B5E20",
         onSaved: ((Pin) -> Unit)? = null,
+        onError: ((Throwable) -> Unit)? = null,
     ) {
         viewModelScope.launch {
-            val pin = Pin(
-                name = name?.takeIf { it.isNotBlank() } ?: defaultName(latitude, longitude),
-                lat = latitude,
-                lon = longitude,
-                color = color,
-                createdAt = Clock.System.now(),
-            )
-            val id = pinRepository.add(pin)
-            onSaved?.invoke(pin.copy(id = id))
+            try {
+                val pin = Pin(
+                    name = name?.takeIf { it.isNotBlank() } ?: defaultName(latitude, longitude),
+                    lat = latitude,
+                    lon = longitude,
+                    color = color,
+                    createdAt = Clock.System.now(),
+                )
+                val id = pinRepository.add(pin)
+                onSaved?.invoke(pin.copy(id = id))
+            } catch (error: CancellationException) {
+                throw error
+            } catch (error: Exception) {
+                Log.e(TAG, "Failed to save pin", error)
+                onError?.invoke(error)
+            }
         }
     }
 
@@ -79,6 +90,7 @@ class PinListViewModel @Inject constructor(
     }
 
     private companion object {
+        private const val TAG = "PinListViewModel"
         private const val PIN_NAME_FORMAT = "Pin (%.4f, %.4f)"
     }
 }

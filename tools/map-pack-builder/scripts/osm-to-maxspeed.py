@@ -21,13 +21,15 @@ A `CREATE INDEX idx_road_speed_lat ON road_speed(lat)` supports the bounding-box
 prefilter the consumer uses to find nearby roads.
 
 Usage:
-    python3 osm-to-maxspeed.py INPUT_PBF OUTPUT_SEARCH_DB
+    python3 osm-to-maxspeed.py INPUT_PBF OUTPUT_SEARCH_DB [BBOX]
 
 Arguments:
     INPUT_PBF         Path to the .osm.pbf file.
     OUTPUT_SEARCH_DB  Path to the SQLite search database. The road_speed table
                       is created if absent (CREATE TABLE IF NOT EXISTS) and
-                      augmented with the extracted rows.
+                      replaced with the extracted rows.
+    BBOX              Optional west,south,east,north bounds. A road is included
+                      when its centroid is inside the bounds (inclusive).
 """
 
 import sqlite3
@@ -68,6 +70,31 @@ MPH_TO_KMH = 1.60934
 # AU's highest posted limit is 130 km/h; anything above this is vandalism or a
 # bad tag and must never become a "limit a road can never exceed" for the monitor.
 MAX_PLAUSIBLE_KMH = 140
+
+
+def parse_bbox(raw):
+    """Parse and validate west,south,east,north bounds."""
+    try:
+        parts = tuple(float(value) for value in raw.split(","))
+    except ValueError as error:
+        raise ValueError(f"bbox contains a non-numeric value: {raw!r}") from error
+    if len(parts) != 4:
+        raise ValueError(f"bbox must contain four comma-separated values: {raw!r}")
+
+    west, south, east, north = parts
+    if not (-180 <= west <= east <= 180):
+        raise ValueError(f"bbox longitude order/range is invalid: {raw!r}")
+    if not (-90 <= south <= north <= 90):
+        raise ValueError(f"bbox latitude order/range is invalid: {raw!r}")
+    return parts
+
+
+def in_bbox(lat, lon, bbox):
+    """Return whether a point is inside inclusive bounds (or no bounds)."""
+    if bbox is None:
+        return True
+    west, south, east, north = bbox
+    return south <= lat <= north and west <= lon <= east
 
 
 def _sane(speed):
@@ -147,13 +174,15 @@ def way_centroid(way):
 
 
 class MaxspeedExtractor(osmium.SimpleHandler):
-    def __init__(self, rows):
+    def __init__(self, rows, bbox=None):
         super().__init__()
         self.rows = rows
+        self.bbox = bbox
         self.matched = 0  # highway ways with a maxspeed tag (parseable or not)
         self.emitted = 0  # rows actually emitted
         self.skipped_unparseable = 0  # maxspeed present but not parseable
         self.skipped_no_location = 0  # parseable but no node centroid
+        self.skipped_outside_bbox = 0  # parseable centroid outside requested pack
 
     def way(self, w):
         if w.tags.get("highway") is None:
@@ -171,6 +200,9 @@ class MaxspeedExtractor(osmium.SimpleHandler):
         lat, lon = way_centroid(w)
         if lat is None:
             self.skipped_no_location += 1
+            return
+        if not in_bbox(lat, lon, self.bbox):
+            self.skipped_outside_bbox += 1
             return
 
         name = w.tags.get("name") or ""
@@ -195,15 +227,23 @@ def create_schema(conn):
 
 
 def main():
-    if len(sys.argv) != 3:
-        print(f"Usage: {sys.argv[0]} INPUT_PBF OUTPUT_SEARCH_DB", file=sys.stderr)
+    if len(sys.argv) not in (3, 4):
+        print(
+            f"Usage: {sys.argv[0]} INPUT_PBF OUTPUT_SEARCH_DB [BBOX]",
+            file=sys.stderr,
+        )
         sys.exit(1)
 
     pbf_path = sys.argv[1]
     db_path = sys.argv[2]
+    try:
+        bbox = parse_bbox(sys.argv[3]) if len(sys.argv) == 4 else None
+    except ValueError as error:
+        print(f"Invalid BBOX: {error}", file=sys.stderr)
+        sys.exit(1)
 
     rows = []
-    handler = MaxspeedExtractor(rows)
+    handler = MaxspeedExtractor(rows, bbox)
     # locations=True with the flex_mem index gives way nodes their coordinates
     # so we can compute centroids (mirrors osm-to-search-csv.py).
     handler.apply_file(pbf_path, locations=True, idx="flex_mem")
@@ -228,7 +268,8 @@ def main():
         f"road_speed: matched {handler.matched} highway ways with maxspeed, "
         f"emitted {handler.emitted} rows "
         f"(skipped {handler.skipped_unparseable} unparseable, "
-        f"{handler.skipped_no_location} without node locations).",
+        f"{handler.skipped_no_location} without node locations, "
+        f"{handler.skipped_outside_bbox} outside bbox).",
         file=sys.stderr,
     )
     print(f"road_speed now holds {total} rows in {db_path}", file=sys.stderr)

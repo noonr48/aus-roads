@@ -41,6 +41,9 @@ fun RouteSheet(
     onDismiss: () -> Unit,
     onAddWaypoint: ((String) -> Unit)? = null,
     navigationViewModel: au.com.ausroads.feature.navigation.NavigationViewModel? = null,
+    preciseLocationGranted: Boolean = false,
+    preciseLocationNeedsSettings: Boolean = false,
+    onRequestPreciseLocation: () -> Unit = {},
     avoidOptions: RouteOptions = RouteOptions(),
     onAvoidOptionsChange: (RouteOptions) -> Unit = {},
     modifier: Modifier = Modifier,
@@ -56,6 +59,9 @@ fun RouteSheet(
             onDismiss = onDismiss,
             onAddWaypoint = onAddWaypoint,
             navigationViewModel = navigationViewModel,
+            preciseLocationGranted = preciseLocationGranted,
+            preciseLocationNeedsSettings = preciseLocationNeedsSettings,
+            onRequestPreciseLocation = onRequestPreciseLocation,
             avoidOptions = avoidOptions,
             onAvoidOptionsChange = onAvoidOptionsChange,
         )
@@ -69,6 +75,9 @@ private fun RouteContent(
     onDismiss: () -> Unit,
     onAddWaypoint: ((String) -> Unit)? = null,
     navigationViewModel: au.com.ausroads.feature.navigation.NavigationViewModel? = null,
+    preciseLocationGranted: Boolean = false,
+    preciseLocationNeedsSettings: Boolean = false,
+    onRequestPreciseLocation: () -> Unit = {},
     avoidOptions: RouteOptions = RouteOptions(),
     onAvoidOptionsChange: (RouteOptions) -> Unit = {},
     modifier: Modifier = Modifier,
@@ -111,14 +120,42 @@ private fun RouteContent(
         }
 
         if (navigationViewModel != null) {
+            if (!preciseLocationGranted) {
+                Text(
+                    text = stringResource(
+                        if (preciseLocationNeedsSettings) {
+                            R.string.route_precise_location_settings_explanation
+                        } else {
+                            R.string.route_precise_location_explanation
+                        },
+                    ),
+                    style = MaterialTheme.typography.bodyMedium,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+            }
             Button(
                 onClick = {
-                    navigationViewModel.startNavigation(result)
-                    onDismiss()
+                    if (preciseLocationGranted) {
+                        if (navigationViewModel.startNavigation(result)) onDismiss()
+                    } else {
+                        onRequestPreciseLocation()
+                    }
                 },
                 modifier = Modifier.fillMaxWidth(),
             ) {
-                Text(stringResource(R.string.route_start_navigation))
+                Text(
+                    stringResource(
+                        if (preciseLocationGranted) {
+                            R.string.route_start_navigation
+                        } else {
+                            if (preciseLocationNeedsSettings) {
+                                R.string.route_open_location_settings
+                            } else {
+                                R.string.route_enable_precise_location
+                            }
+                        },
+                    ),
+                )
             }
         }
 

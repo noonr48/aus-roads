@@ -5,6 +5,7 @@ import android.content.Context
 import android.location.Location
 import android.os.Looper
 import au.com.ausroads.feature.navigation.NavigationLocation
+import au.com.ausroads.feature.navigation.NavigationLocationUnavailableException
 import au.com.ausroads.feature.navigation.NavigationLocationSource
 import com.google.android.gms.location.FusedLocationProviderClient
 import com.google.android.gms.location.LocationCallback
@@ -26,7 +27,7 @@ import kotlinx.coroutines.flow.callbackFlow
  * withNetwork flavor: binds the real fused-location-backed navigation source.
  * This module (and the play-services-location dependency it needs) is confined to
  * the withNetwork source set so the privacy-first offline flavor links no Google
- * Play Services and contains no location code.
+ * Play Services.
  */
 @Module
 @InstallIn(SingletonComponent::class)
@@ -38,7 +39,7 @@ object NavigationLocationModule {
     ): NavigationLocationSource = FusedNavigationLocationSource(context)
 }
 
-private const val MIN_UPDATE_DISTANCE_M = 5f
+private const val MIN_UPDATE_DISTANCE_M = 0f
 private const val MIN_UPDATE_INTERVAL_MS = 500L
 
 private class FusedNavigationLocationSource(
@@ -49,6 +50,15 @@ private class FusedNavigationLocationSource(
 
     @SuppressLint("MissingPermission")
     override fun locationUpdates(intervalMs: Long): Flow<NavigationLocation> = callbackFlow {
+        var receivedFix = false
+        val watchdog = LocationStreamWatchdog(this) {
+            close(NavigationLocationUnavailableException(timeoutMessage(receivedFix)))
+        }
+        watchdog.arm(INITIAL_FIX_TIMEOUT_MS)
+        val activeTimeoutMillis = maxOf(
+            ACTIVE_FIX_TIMEOUT_MS,
+            intervalMs * ACTIVE_TIMEOUT_INTERVAL_MULTIPLIER,
+        )
         val request = LocationRequest.Builder(Priority.PRIORITY_HIGH_ACCURACY, intervalMs)
             .setMinUpdateDistanceMeters(MIN_UPDATE_DISTANCE_M)
             .setMinUpdateIntervalMillis(MIN_UPDATE_INTERVAL_MS)
@@ -57,14 +67,25 @@ private class FusedNavigationLocationSource(
         val callback = object : LocationCallback() {
             override fun onLocationResult(result: LocationResult) {
                 result.lastLocation?.let { loc ->
+                    receivedFix = true
+                    watchdog.arm(activeTimeoutMillis)
                     trySend(loc.toNavigationLocation())
                 }
             }
         }
 
         client.requestLocationUpdates(request, callback, Looper.getMainLooper())
+            .addOnFailureListener { error ->
+                watchdog.cancel()
+                close(NavigationLocationUnavailableException("Location provider failed", error))
+            }
+            .addOnCanceledListener {
+                watchdog.cancel()
+                close(NavigationLocationUnavailableException("Location request was cancelled"))
+            }
 
         awaitClose {
+            watchdog.cancel()
             client.removeLocationUpdates(callback)
         }
     }
@@ -78,3 +99,10 @@ private class FusedNavigationLocationSource(
         timestamp = time,
     )
 }
+
+private fun timeoutMessage(receivedFix: Boolean): String =
+    if (receivedFix) "Location updates stopped" else "No location fix was received"
+
+private const val INITIAL_FIX_TIMEOUT_MS = 15_000L
+private const val ACTIVE_FIX_TIMEOUT_MS = 30_000L
+private const val ACTIVE_TIMEOUT_INTERVAL_MULTIPLIER = 3L

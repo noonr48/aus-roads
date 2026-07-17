@@ -40,29 +40,8 @@ jobs:
         working-directory: android
         run: ./gradlew assembleDebug
 
-      - name: Permission audit (offline flavor — no INTERNET, no LOCATION)
-        working-directory: android
-        run: |
-          set -e
-          # The `offline` flavor is the privacy flagship: it must declare neither
-          # INTERNET nor any ACCESS_*_LOCATION. The `withNetwork` flavor legitimately
-          # does; we audit only that the offline build stays clean. assembleDebug
-          # builds both flavors into apk/<flavor>/debug/.
-          APK_PATH=$(find app/build/outputs/apk/offline/debug -name '*.apk' | head -1)
-          if [ -z "$APK_PATH" ]; then
-            echo "No offline APK found"; exit 1
-          fi
-          echo "Auditing $APK_PATH"
-          AAPT2="$ANDROID_HOME/build-tools/$(ls -1 $ANDROID_HOME/build-tools | sort -V | tail -1)/aapt2"
-          PERMS=$("$AAPT2" dump permissions "$APK_PATH" 2>/dev/null || true)
-          echo "$PERMS"
-          # The auto-generated DYNAMIC_RECEIVER_NOT_EXPORTED_PERMISSION is fine;
-          # it is an internal-only Android 14 permission with no privacy impact.
-          if echo "$PERMS" | grep -E "INTERNET|ACCESS_(FINE|COARSE|BACKGROUND)_LOCATION" ; then
-            echo "ERROR: offline flavor must not declare INTERNET or LOCATION permissions"
-            exit 1
-          fi
-          echo "Permission audit passed: offline flavor has no INTERNET, no LOCATION"
+      - name: Privacy audit (merged manifests)
+        run: ./tools/privacy-audit/run.sh
 
       - name: Static analysis (detekt)
         working-directory: android

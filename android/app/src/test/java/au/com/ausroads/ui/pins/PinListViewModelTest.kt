@@ -56,6 +56,21 @@ class PinListViewModelTest {
     }
 
     @Test
+    fun `addPinAt reports repository failure`() = runTest {
+        fakeRepository.throwOnAdd = true
+        var failure: Throwable? = null
+
+        viewModel.addPinAt(
+            longitude = 138.6,
+            latitude = -34.9,
+            onError = { failure = it },
+        )
+
+        assertThat(failure).isInstanceOf(IllegalStateException::class.java)
+        assertThat(viewModel.pins.value).isEmpty()
+    }
+
+    @Test
     fun `delete removes a pin`() = runTest {
         val pin = Pin(
             id = 1,
@@ -76,10 +91,12 @@ class PinListViewModelTest {
     private class FakePinRepository : PinRepository {
         private val pins = MutableStateFlow<List<Pin>>(emptyList())
         private var nextId = 1L
+        var throwOnAdd: Boolean = false
 
         override fun observeAll(): Flow<List<Pin>> = pins
 
         override suspend fun add(pin: Pin): Long {
+            if (throwOnAdd) throw IllegalStateException("simulated write failure")
             val id = nextId++
             pins.value = pins.value + pin.copy(id = id)
             return id

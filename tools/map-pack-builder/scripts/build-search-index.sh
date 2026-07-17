@@ -149,19 +149,42 @@ log "search_meta: $META_COUNT rows, search_index: $FTS_COUNT rows"
 # manifest is unchanged — the SHA-256 below covers it). The app's over-speed
 # monitor queries road_speed(name, maxspeed_kmh, lat, lon) by a lat bounding box.
 #
-# Re-run safety: osm-to-maxspeed.py uses CREATE TABLE IF NOT EXISTS + INSERT,
-# so it appends. The DB is rebuilt fresh each run (rm -f "$DB" in section 4),
-# so road_speed starts empty here and this is always a clean single pass.
+# Re-run safety: osm-to-maxspeed.py clears road_speed before inserting. The DB
+# is also rebuilt fresh in section 4, so this is always a clean single pass.
 
 log "extracting road speed limits into road_speed..."
 
-python3 "$HERE/osm-to-maxspeed.py" "$PBF" "$DB"
+MAXSPEED_ARGS=("$PBF" "$DB")
+if [[ -n "$BARG" ]]; then
+    MAXSPEED_ARGS+=("$BARG")
+fi
+python3 "$HERE/osm-to-maxspeed.py" "${MAXSPEED_ARGS[@]}"
 
 SPEED_COUNT=$("$SQLITE3" "$DB" "SELECT COUNT(*) FROM road_speed;")
 log "road_speed: $SPEED_COUNT rows"
 
 if [[ "$SPEED_COUNT" -eq 0 ]]; then
     err "no road_speed rows extracted — check PBF maxspeed coverage"
+fi
+
+# Both components in search.db must honour the same inclusive bounds. The
+# extractor validates BARG as four finite, ordered numbers before these values
+# are interpolated into SQLite.
+if [[ -n "$BARG" ]]; then
+    IFS=',' read -r WEST SOUTH EAST NORTH <<< "$BARG"
+    META_OUTSIDE=$(
+        "$SQLITE3" "$DB" \
+            "SELECT COUNT(*) FROM search_meta WHERE NOT (lon BETWEEN $WEST AND $EAST AND lat BETWEEN $SOUTH AND $NORTH);"
+    )
+    SPEED_OUTSIDE=$(
+        "$SQLITE3" "$DB" \
+            "SELECT COUNT(*) FROM road_speed WHERE NOT (lon BETWEEN $WEST AND $EAST AND lat BETWEEN $SOUTH AND $NORTH);"
+    )
+    [[ "$META_OUTSIDE" -eq 0 ]] || \
+        err "bbox semantic gate: search_meta has $META_OUTSIDE rows outside $BARG"
+    [[ "$SPEED_OUTSIDE" -eq 0 ]] || \
+        err "bbox semantic gate: road_speed has $SPEED_OUTSIDE rows outside $BARG"
+    log "bbox semantic gate OK: search_meta and road_speed are inside $BARG"
 fi
 
 # ---------------------------------------------------------------------------

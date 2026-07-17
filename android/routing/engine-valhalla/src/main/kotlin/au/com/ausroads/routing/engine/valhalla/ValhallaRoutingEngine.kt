@@ -1,6 +1,7 @@
 package au.com.ausroads.routing.engine.valhalla
 
 import android.content.Context
+import au.com.ausroads.core.common.PackRuntimeGenerationGate
 import au.com.ausroads.core.model.GeoPoint
 import au.com.ausroads.core.model.RoutingEffect
 import au.com.ausroads.routing.engine.CostingProfile
@@ -27,6 +28,7 @@ import com.valhalla.valhalla.ValhallaResponse
 import com.valhalla.valhalla.config.ValhallaConfigManager
 import com.valhalla.valhalla.files.ValhallaFile
 import dagger.hilt.android.qualifiers.ApplicationContext
+import java.io.File
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 import javax.inject.Inject
@@ -36,30 +38,60 @@ import javax.inject.Singleton
 class ValhallaRoutingEngine @Inject constructor(
     @ApplicationContext private val context: Context,
 ) : RoutingEngine {
-
-    // Written on the background routing-init thread (AusRoadsApp.onCreate), read
-    // from route-computation coroutines on other threads. @Volatile makes the
-    // initialised engine visible across threads (ARM has a weak memory model).
-    @Volatile private var valhalla: Valhalla? = null
-    @Volatile private var tilePath: String? = null
+    private val generations = RoutingGenerationStore()
 
     /**
      * Initialize with the path to valhalla_tiles.tar.
      * Called when the routing pack component is available.
      */
     fun initialize(tarPath: String) {
-        if (tilePath == tarPath && valhalla != null) return
-        tilePath = tarPath
+        if (generations.read { it.tilePath == tarPath && it.engine != null }) return
+        prepare(tarPath).use(::activate)
+    }
+
+    /** Build a candidate engine without disturbing routes from the active generation. */
+    fun prepare(tarPath: String?): PreparedRoutingEngine {
+        if (tarPath == null) return PreparedRoutingEngine(null, null, null)
 
         // ValhallaConfigManager serializes the Kotlin ValhallaConfig via this Moshi.
         // Without KotlinJsonAdapterFactory, Moshi cannot reflectively serialize Kotlin
         // classes and writeConfig() throws, so initialize() must register it.
         val moshi = Moshi.Builder().add(KotlinJsonAdapterFactory()).build()
         val config = buildConfig(tarPath)
-        val configFile = ValhallaFile(context, "valhalla.json", context.filesDir)
-        val configManager = ValhallaConfigManager(context, configFile, moshi)
-        configManager.writeConfig(config)
-        valhalla = Valhalla(context, config, configManager, moshi)
+        val configPath = File.createTempFile(CONFIG_PREFIX, CONFIG_SUFFIX, context.filesDir)
+        var ownershipTransferred = false
+        try {
+            val configFile = ValhallaFile(context, configPath.name, context.filesDir)
+            val configManager = ValhallaConfigManager(context, configFile, moshi)
+            val candidate = PreparedRoutingEngine(
+                // Valhalla writes the config during construction. Its native route
+                // call reads that path again on every request, so each generation
+                // must keep a private, immutable file for its whole active lifetime.
+                engine = Valhalla(context, config, configManager, moshi),
+                tilePath = tarPath,
+                configFile = configPath,
+            )
+            check(configPath.isFile && configPath.length() > 0L) {
+                "Valhalla candidate did not write its generation config: ${configPath.absolutePath}"
+            }
+            check(configPath.setReadOnly()) {
+                "Could not make Valhalla generation config immutable: ${configPath.absolutePath}"
+            }
+            ownershipTransferred = true
+            return candidate
+        } finally {
+            if (!ownershipTransferred) deleteRoutingConfig(configPath)
+        }
+    }
+
+    /** Commit a fully constructed candidate while the generation write lease is held. */
+    fun activate(prepared: PreparedRoutingEngine) {
+        generations.activate(prepared)
+    }
+
+    /** Make routing unavailable while a pack is absent or a new engine is being built. */
+    fun clear() {
+        generations.clear()
     }
 
     /**
@@ -87,16 +119,18 @@ class ValhallaRoutingEngine @Inject constructor(
         return builderClass.getMethod("build").invoke(builder) as ValhallaConfig
     }
 
-    override fun isReady(): Boolean = valhalla != null && tilePath != null
+    override fun isReady(): Boolean = generations.read { it.engine != null && it.tilePath != null }
 
     override suspend fun computeRoute(request: RouteRequest): RouteResult =
         withContext(Dispatchers.IO) {
-            val engine = valhalla
-                ?: throw IllegalStateException("Routing engine not initialized; call initialize() first")
+            generations.read { generation ->
+                val engine = generation.engine
+                    ?: throw IllegalStateException("Routing engine not initialized; call initialize() first")
 
-            val valhallaRequest = buildValhallaRequest(request)
-            val response = engine.route(valhallaRequest)
-            parseResponse(response)
+                val valhallaRequest = buildValhallaRequest(request)
+                val response = engine.route(valhallaRequest)
+                parseResponse(response)
+            }
         }
 
     private fun buildValhallaRequest(request: RouteRequest): ValhallaRouteRequest {
@@ -207,6 +241,8 @@ class ValhallaRoutingEngine @Inject constructor(
         // Default/unnamed package in the pinned valhalla-models 0.0.9.
         // Moves to "com.valhalla.config.ValhallaConfigBuilder" in 0.2.0+.
         private const val CONFIG_BUILDER_CLASS_NAME = "ValhallaConfigBuilder"
+        private const val CONFIG_PREFIX = "valhalla-generation-"
+        private const val CONFIG_SUFFIX = ".json"
 
         /**
          * Translate user [RouteOptions] into Valhalla auto-costing options.
@@ -262,5 +298,65 @@ class ValhallaRoutingEngine @Inject constructor(
 
             return points
         }
+    }
+}
+
+/** Candidate routing state whose ownership transfers exactly once at activation. */
+class PreparedRoutingEngine internal constructor(
+    engine: Valhalla?,
+    tilePath: String?,
+    configFile: File?,
+) : AutoCloseable {
+    private var replacement: RoutingReplacement? = RoutingReplacement(engine, tilePath, configFile)
+
+    @Synchronized
+    internal fun claim(): RoutingReplacement = checkNotNull(replacement) {
+        "Prepared routing engine was already activated or closed"
+    }.also { replacement = null }
+
+    @Synchronized
+    override fun close() {
+        deleteRoutingConfig(replacement?.configFile)
+        replacement = null
+    }
+}
+
+internal data class RoutingReplacement(
+    val engine: Valhalla?,
+    val tilePath: String?,
+    val configFile: File?,
+)
+
+/** Owns the active engine and its config under the same process-wide generation lease. */
+internal class RoutingGenerationStore {
+    private var active = RoutingReplacement(null, null, null)
+
+    fun <T> read(block: (RoutingReplacement) -> T): T = PackRuntimeGenerationGate.read {
+        block(active)
+    }
+
+    fun activate(prepared: PreparedRoutingEngine) {
+        PackRuntimeGenerationGate.write {
+            val replacement = prepared.claim()
+            val previous = active
+            active = replacement
+            if (previous.configFile != replacement.configFile) {
+                deleteRoutingConfig(previous.configFile)
+            }
+        }
+    }
+
+    fun clear() {
+        PackRuntimeGenerationGate.write {
+            val previous = active
+            active = RoutingReplacement(null, null, null)
+            deleteRoutingConfig(previous.configFile)
+        }
+    }
+}
+
+private fun deleteRoutingConfig(configFile: File?) {
+    if (configFile != null && configFile.exists() && !configFile.delete()) {
+        android.util.Log.w("ValhallaRouting", "Could not delete routing config: ${configFile.absolutePath}")
     }
 }

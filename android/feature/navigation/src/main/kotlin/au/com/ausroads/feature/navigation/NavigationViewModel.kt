@@ -21,15 +21,12 @@ import dagger.hilt.android.lifecycle.HiltViewModel
 import dagger.hilt.android.qualifiers.ApplicationContext
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Job
-import kotlinx.coroutines.delay
-import kotlinx.coroutines.flow.catch
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
 import javax.inject.Inject
-import kotlin.math.min
 
 @HiltViewModel
 class NavigationViewModel @Inject constructor(
@@ -53,6 +50,7 @@ class NavigationViewModel @Inject constructor(
     private var savedDestination: GeoPoint? = null
     private var lastRecalcTime = 0L
     private var isRecalculating = false
+    private var lastNavigatingState: NavigationState.Navigating? = null
 
     // Mirrors Settings.ttsEnabled. Bridged in from the UI layer (which owns the
     // settings dependency) so voice guidance actually honours the toggle.
@@ -63,7 +61,13 @@ class NavigationViewModel @Inject constructor(
         ttsEnabled = enabled
     }
 
-    fun startNavigation(routeResult: RouteResult) {
+    /** Starts live navigation only when Android has granted precise location. */
+    fun startNavigation(routeResult: RouteResult): Boolean {
+        if (!hasPreciseLocationPermission()) {
+            _state.update { NavigationState.PreciseLocationRequired }
+            return false
+        }
+
         route = routeResult
         maneuvers = routeResult.maneuvers
         currentManeuverIndex = 0
@@ -76,8 +80,7 @@ class NavigationViewModel @Inject constructor(
         // Initialize TTS for voice guidance
         tts.initialize()
 
-        _state.update {
-            NavigationState.Navigating(
+        val initialState = NavigationState.Navigating(
                 currentManeuver = maneuvers.firstOrNull(),
                 nextManeuver = maneuvers.getOrNull(1),
                 remainingDistanceMeters = routeResult.distanceMeters.toDouble(),
@@ -85,13 +88,11 @@ class NavigationViewModel @Inject constructor(
                 maneuverIndex = 0,
                 totalManeuvers = maneuvers.size,
             )
-        }
+        lastNavigatingState = initialState
+        _state.update { initialState }
 
-        if (hasLocationPermission()) {
-            startGpsTracking()
-        } else {
-            startSimulatedTracking()
-        }
+        startGpsTracking()
+        return true
     }
 
     fun stopNavigation() {
@@ -104,6 +105,7 @@ class NavigationViewModel @Inject constructor(
         savedDestination = null
         lastRecalcTime = 0L
         isRecalculating = false
+        lastNavigatingState = null
         _batteryWarning.update { false }
         _state.update { NavigationState.Idle }
         tts.shutdown()
@@ -149,8 +151,7 @@ class NavigationViewModel @Inject constructor(
             }
         }
 
-        _state.update {
-            NavigationState.Navigating(
+        val nextState = NavigationState.Navigating(
                 currentManeuver = maneuvers.getOrNull(currentManeuverIndex),
                 nextManeuver = maneuvers.getOrNull(currentManeuverIndex + 1),
                 remainingDistanceMeters = calculateRemainingDistance(position),
@@ -159,7 +160,8 @@ class NavigationViewModel @Inject constructor(
                 maneuverIndex = currentManeuverIndex,
                 totalManeuvers = maneuvers.size,
             )
-        }
+        lastNavigatingState = nextState
+        _state.update { nextState }
 
         // Battery warning: check real battery level
         val batteryPct = getBatteryPercent()
@@ -171,56 +173,44 @@ class NavigationViewModel @Inject constructor(
         }
     }
 
-    private fun hasLocationPermission(): Boolean {
+    private fun hasPreciseLocationPermission(): Boolean {
         return ContextCompat.checkSelfPermission(
             context, Manifest.permission.ACCESS_FINE_LOCATION,
         ) == PackageManager.PERMISSION_GRANTED
     }
 
+    @Suppress("TooGenericExceptionCaught") // provider implementations report platform-specific failures
     private fun startGpsTracking() {
+        navigationJob?.cancel()
         navigationJob = viewModelScope.launch {
-            locationProvider.locationUpdates(intervalMs = 1000)
-                .catch {
-                    // Location permission can be revoked mid-navigation (the provider
-                    // then throws SecurityException). Catch it so the collector doesn't
-                    // crash the app; navigation holds its last known position.
-                }
-                .collect { loc ->
+            try {
+                locationProvider.locationUpdates(intervalMs = 1000).collect { loc ->
                     updatePosition(
                         GeoPoint(longitude = loc.longitude, latitude = loc.latitude),
                         loc.speedKmh,
                     )
                 }
-        }
-    }
-
-    private fun startSimulatedTracking() {
-        navigationJob = viewModelScope.launch {
-            val geom = route?.geometry
-            if (geom.isNullOrEmpty()) return@launch
-            var simIndex = 0
-            val stepIntervalMs = 2000L // Move every 2 seconds
-            while (simIndex < geom.size - 1) {
-                delay(stepIntervalMs)
-                simIndex = min(simIndex + 1, geom.size - 1)
-                val simPos = geom[simIndex]
-                // Estimate speed from remaining route data
-                val remainingDist = calculateRemainingDistanceFromIndex(simIndex)
-                val remainingDuration = route?.durationSeconds?.toDouble()
-                    ?.let { it * (remainingDist / (route?.distanceMeters?.toDouble() ?: 1.0)) }
-                    ?: (remainingDist / 1000.0 / 60.0 * 3600.0)
-                val speedKmh = if (remainingDuration > 0) {
-                    (remainingDist / 1000.0) / (remainingDuration / 3600.0)
-                } else {
-                    60.0
+            } catch (e: CancellationException) {
+                throw e
+            } catch (e: Exception) {
+                val previous = lastNavigatingState
+                if (previous != null) {
+                    _state.update { NavigationState.LocationUnavailable(previous) }
                 }
-                updatePosition(simPos, speedKmh.coerceIn(1.0, 120.0))
             }
         }
     }
 
-    private fun calculateRemainingDistanceFromIndex(fromIndex: Int): Double =
-        NavigationGeometry.distanceFromIndex(route?.geometry.orEmpty(), fromIndex)
+    fun retryLocation() {
+        val unavailable = _state.value as? NavigationState.LocationUnavailable ?: return
+        if (!hasPreciseLocationPermission()) {
+            _state.update { NavigationState.PreciseLocationRequired }
+            return
+        }
+        lastNavigatingState = unavailable.previousState
+        _state.update { unavailable.previousState }
+        startGpsTracking()
+    }
 
     private fun getNextManeuverPoint(): GeoPoint? {
         val geom = route?.geometry ?: return null
@@ -261,8 +251,7 @@ class NavigationViewModel @Inject constructor(
                 maneuvers = result.maneuvers
                 currentManeuverIndex = 0
 
-                _state.update {
-                    NavigationState.Navigating(
+                val recalculatedState = NavigationState.Navigating(
                         currentManeuver = maneuvers.firstOrNull(),
                         nextManeuver = maneuvers.getOrNull(1),
                         remainingDistanceMeters = result.distanceMeters.toDouble(),
@@ -271,7 +260,8 @@ class NavigationViewModel @Inject constructor(
                         maneuverIndex = 0,
                         totalManeuvers = maneuvers.size,
                     )
-                }
+                lastNavigatingState = recalculatedState
+                _state.update { recalculatedState }
                 if (ttsEnabled) tts.speakText(context.getString(R.string.nav_recalculated_tts))
             } catch (e: CancellationException) {
                 throw e

@@ -1,7 +1,11 @@
 // :app — the aus-roads Android application.
-// v0.1 is offline-only: no INTERNET permission, no location, no Google Play Services.
+// The offline flavor has no INTERNET and uses Android's on-device GPS service;
+// the network flavor may download packs and uses fused foreground location.
 
 import java.util.Properties
+
+val includeX86_64ForEmulator =
+    providers.gradleProperty("ausroads.includeX86_64").orNull.toBoolean()
 
 plugins {
     id("ausroads.android.application")
@@ -88,7 +92,7 @@ android {
     productFlavors {
         create("offline") {
             dimension = "network"
-            // No INTERNET. Preserves v0.1 privacy posture for sideload builds.
+            // No INTERNET. Foreground location stays entirely on-device.
             // No download endpoint and downloads disabled — the offline flagship
             // cannot reach the network, so it must never try.
             buildConfigField("String", "MAP_PACK_BASE_URL", "\"\"")
@@ -134,13 +138,18 @@ android {
         unitTests.isReturnDefaultValues = true
     }
 
-    // Single ABI for v0.1: arm64-v8a only.
+    // Single shipping ABI for v0.1: arm64-v8a only. Local CI can opt into an
+    // additional x86_64 slice with -Pausroads.includeX86_64=true so the exact
+    // debug app can be exercised on the repository's Android emulator.
     // MapLibre Native Android SDK is ~10-20 MB per ABI; shipping all four would
     // bloat the APK unnecessarily. arm64-v8a covers >99% of in-market devices in
     // 2026 and Play Store will require 64-bit by 2026 anyway.
     defaultConfig {
         ndk {
-            abiFilters += listOf("arm64-v8a")
+            abiFilters += buildList {
+                add("arm64-v8a")
+                if (includeX86_64ForEmulator) add("x86_64")
+            }
         }
     }
 }
@@ -177,9 +186,8 @@ dependencies {
     implementation(project(":core:geo"))
     implementation(project(":feature:trip"))
 
-    // Google Play Services (location for the "My Location" button) — confined to the
-    // withNetwork flavor so the privacy-first `offline` flavor links no Play Services
-    // and contains no location code (see src/{withNetwork,offline}/.../map/LocationProviders.kt).
+    // Google Play Services location is confined to withNetwork. The offline flavor
+    // uses platform LocationManager and therefore links no Play Services.
     "withNetworkImplementation"("com.google.android.gms:play-services-location:21.3.0")
 
     // AndroidX

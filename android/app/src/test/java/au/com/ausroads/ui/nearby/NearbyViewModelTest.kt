@@ -7,6 +7,8 @@ import com.google.common.truth.Truth.assertThat
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.test.StandardTestDispatcher
 import kotlinx.coroutines.test.advanceUntilIdle
 import kotlinx.coroutines.test.resetMain
@@ -92,7 +94,7 @@ class NearbyViewModelTest {
     }
 
     @Test
-    fun `selectCategory swallows repository failure and ends not loading`() = runTest(testDispatcher) {
+    fun `selectCategory surfaces repository failure and ends not loading`() = runTest(testDispatcher) {
         repository.throwOnNearest = true
 
         viewModel.selectCategory(PoiCategory.FUEL)
@@ -101,6 +103,7 @@ class NearbyViewModelTest {
         val state = viewModel.uiState.value
         assertThat(state.results).isEmpty()
         assertThat(state.isLoading).isFalse()
+        assertThat(state.searchUnavailable).isTrue()
     }
 
     @Test
@@ -122,20 +125,54 @@ class NearbyViewModelTest {
     }
 
     @Test
-    fun `setReference moves the reference and clears results`() = runTest(testDispatcher) {
+    fun `setReference moves the reference and reruns the selected category`() = runTest(testDispatcher) {
         repository.byCategory[PoiCategory.FUEL] = listOf(fuel("Some Servo", lonOffset = 0.05))
         viewModel.selectCategory(PoiCategory.FUEL)
         advanceUntilIdle()
         assertThat(viewModel.uiState.value.results).isNotEmpty()
+        repository.categoryQueries.clear()
 
         viewModel.setReference(latitude = -33.8688, longitude = 151.2093)
         advanceUntilIdle()
 
         assertThat(viewModel.reference.latitude).isEqualTo(-33.8688)
         assertThat(viewModel.reference.longitude).isEqualTo(151.2093)
-        assertThat(viewModel.uiState.value.selected).isNull()
-        assertThat(viewModel.uiState.value.results).isEmpty()
+        assertThat(viewModel.uiState.value.selected).isEqualTo(PoiCategory.FUEL)
+        assertThat(viewModel.uiState.value.results.map { it.result.name })
+            .containsExactly("Some Servo")
+        assertThat(repository.categoryQueries.filter { it.category == PoiCategory.FUEL })
+            .containsExactly(CategoryQuery(-33.8688, 151.2093, PoiCategory.FUEL))
     }
+
+    @Test
+    fun `resetReference returns to Adelaide reruns selection and is idempotent`() =
+        runTest(testDispatcher) {
+            repository.byCategory[PoiCategory.FUEL] = listOf(fuel("Some Servo", lonOffset = 0.05))
+            viewModel.selectCategory(PoiCategory.FUEL)
+            viewModel.setReference(latitude = -33.8688, longitude = 151.2093)
+            advanceUntilIdle()
+            repository.categoryQueries.clear()
+
+            viewModel.resetReference()
+            advanceUntilIdle()
+
+            assertThat(viewModel.reference).isEqualTo(NearbyViewModel.ADELAIDE_CBD)
+            assertThat(viewModel.uiState.value.selected).isEqualTo(PoiCategory.FUEL)
+            assertThat(repository.categoryQueries.filter { it.category == PoiCategory.FUEL })
+                .containsExactly(
+                    CategoryQuery(
+                        NearbyViewModel.ADELAIDE_CBD.latitude,
+                        NearbyViewModel.ADELAIDE_CBD.longitude,
+                        PoiCategory.FUEL,
+                    ),
+                )
+
+            repository.categoryQueries.clear()
+            viewModel.resetReference()
+            advanceUntilIdle()
+
+            assertThat(repository.categoryQueries).isEmpty()
+        }
 
     @Test
     fun `a slow earlier selection cannot overwrite a newer selection's results`() =
@@ -157,6 +194,43 @@ class NearbyViewModelTest {
             assertThat(state.isLoading).isFalse()
         }
 
+    @Test
+    fun `pending unavailable selection invalidates an earlier in-flight query`() =
+        runTest(testDispatcher) {
+            repository.byCategory[PoiCategory.FUEL] = listOf(fuel("Stale Servo", lonOffset = 0.05))
+            repository.delayByCategory[PoiCategory.FUEL] = 1_000L
+
+            viewModel.selectCategory(PoiCategory.FUEL)
+            repository.ready = false
+            viewModel.selectCategory(PoiCategory.HOSPITAL)
+            advanceUntilIdle()
+
+            val state = viewModel.uiState.value
+            assertThat(state.selected).isEqualTo(PoiCategory.HOSPITAL)
+            assertThat(state.results).isEmpty()
+            assertThat(state.searchUnavailable).isTrue()
+            assertThat(state.isLoading).isFalse()
+        }
+
+    @Test
+    fun `pending category reruns when background search initialization completes`() =
+        runTest(testDispatcher) {
+            repository.ready = false
+            viewModel = NearbyViewModel(repository).apply { workDispatcher = testDispatcher }
+            viewModel.selectCategory(PoiCategory.SUPERMARKET)
+            advanceUntilIdle()
+            assertThat(viewModel.uiState.value.searchUnavailable).isTrue()
+
+            repository.byCategory[PoiCategory.SUPERMARKET] =
+                listOf(fuel("Local Supermarket", lonOffset = 0.01))
+            repository.ready = true
+            advanceUntilIdle()
+
+            assertThat(viewModel.uiState.value.searchUnavailable).isFalse()
+            assertThat(viewModel.uiState.value.results.map { it.result.name })
+                .containsExactly("Local Supermarket")
+        }
+
     /** A POI east of the Adelaide CBD by [lonOffset] degrees. */
     private fun fuel(name: String, lonOffset: Double): SearchResult =
         SearchResult(
@@ -175,7 +249,18 @@ class NearbyViewModelTest {
 private class FakeSearchRepository : SearchRepository {
 
     val byCategory: MutableMap<PoiCategory, List<SearchResult>> = mutableMapOf()
+    val categoryQueries: MutableList<CategoryQuery> = mutableListOf()
     var throwOnNearest: Boolean = false
+    private val readinessState = MutableStateFlow(true)
+    var ready: Boolean = true
+        set(value) {
+            field = value
+            readinessState.value = value
+        }
+
+    override val isReady: Boolean
+        get() = ready
+    override val readiness: StateFlow<Boolean> = readinessState
 
     /** Per-category artificial latency (virtual ms) so tests can force a slow
      *  earlier query to land after a faster later one. */
@@ -203,6 +288,7 @@ private class FakeSearchRepository : SearchRepository {
     ): List<SearchResult> {
         if (throwOnNearest) throw RuntimeException("simulated index failure")
         delayByCategory[category]?.let { delay(it) }
+        categoryQueries += CategoryQuery(latitude, longitude, category)
         return byCategory[category].orEmpty().take(limit)
     }
 
@@ -216,3 +302,9 @@ private class FakeSearchRepository : SearchRepository {
 
     override fun close() {}
 }
+
+private data class CategoryQuery(
+    val latitude: Double,
+    val longitude: Double,
+    val category: PoiCategory,
+)

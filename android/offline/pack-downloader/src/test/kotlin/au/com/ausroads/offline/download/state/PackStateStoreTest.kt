@@ -73,6 +73,7 @@ class PackStateStoreTest {
             searchPath = "search.db",
             routingPath = null,
             manifestSha256 = "abc123",
+            directoryName = "v2026.06.01-generation-a",
         )
 
         val json = Json.encodeToString(InstalledPack.serializer(), pack)
@@ -83,6 +84,62 @@ class PackStateStoreTest {
         assertThat(decoded.totalSizeBytes).isEqualTo(150_000_000)
         assertThat(decoded.searchPath).isEqualTo("search.db")
         assertThat(decoded.routingPath).isNull()
+        assertThat(decoded.directoryName).isEqualTo("v2026.06.01-generation-a")
+    }
+
+    @Test
+    fun `legacy descriptor without directory uses version path`() {
+        val pack = InstalledPack(
+            version = "2026.06.01",
+            regionCode = "AU-SA",
+            installedAt = Instant.fromEpochMilliseconds(1717200000000),
+            totalSizeBytes = 1,
+            tilesPath = "tiles.mbtiles",
+            manifestSha256 = "test",
+        )
+
+        assertThat(pack.installDirectoryName()).isEqualTo("v2026.06.01")
+        assertThat(store.packDir(pack)).isEqualTo(File(baseDir, "v2026.06.01"))
+    }
+
+    @Test
+    fun `generation directories distinguish repeated installs of one version`() {
+        val first = store.generationDir("1", "generation-a")
+        val second = store.generationDir("1", "generation-b")
+
+        assertThat(first).isNotEqualTo(second)
+        assertThat(first.parentFile).isEqualTo(baseDir)
+        assertThat(second.parentFile).isEqualTo(baseDir)
+    }
+
+    @Test
+    fun `current descriptor replacement leaves no partial json`() = runTest {
+        val first = installedPack(version = "1", directoryName = "v1-a")
+        val second = installedPack(version = "1", directoryName = "v1-b")
+
+        store.writeCurrent(first)
+        store.writeCurrent(second)
+
+        assertThat(store.readCurrent()).isEqualTo(second)
+        assertThat(File(baseDir, ".current.json.tmp").exists()).isFalse()
+    }
+
+    @Test
+    fun `readCurrent rejects a blank pack version`() = runTest {
+        store.writeCurrent(
+            InstalledPack(
+                version = "",
+                regionCode = "AU-SA",
+                installedAt = Instant.fromEpochMilliseconds(1717200000000),
+                totalSizeBytes = 1,
+                tilesPath = "tiles.mbtiles",
+                searchPath = "search.db",
+                routingPath = null,
+                manifestSha256 = "test",
+            ),
+        )
+
+        assertThat(store.readCurrent()).isNull()
     }
 
     @Test
@@ -104,4 +161,14 @@ class PackStateStoreTest {
         )
         assertThat(progress.percent).isNull()
     }
+
+    private fun installedPack(version: String, directoryName: String) = InstalledPack(
+        version = version,
+        regionCode = "AU-SA",
+        installedAt = Instant.fromEpochMilliseconds(1717200000000),
+        totalSizeBytes = 1,
+        tilesPath = "tiles.mbtiles",
+        manifestSha256 = "test",
+        directoryName = directoryName,
+    )
 }

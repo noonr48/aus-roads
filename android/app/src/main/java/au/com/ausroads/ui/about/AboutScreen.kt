@@ -30,6 +30,7 @@ import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.tooling.preview.Preview
 import au.com.ausroads.R
+import au.com.ausroads.BuildConfig
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
@@ -70,6 +71,13 @@ private fun AboutContent(padding: PaddingValues, modifier: Modifier = Modifier) 
     ) {
         SectionTitle(stringResource(R.string.about_section_app))
         BodyText(stringResource(R.string.about_app_license))
+        BodyText(
+            stringResource(
+                R.string.about_build_identity,
+                BuildConfig.VERSION_NAME,
+                BuildConfig.FLAVOR,
+            ),
+        )
 
         SectionDivider()
         SectionTitle(stringResource(R.string.about_section_data))

@@ -33,6 +33,9 @@ private val MANIFEST_JSON = Json {
     isLenient = true
 }
 
+internal fun decodeWorkerManifest(manifestJson: String?): PackManifest? =
+    manifestJson?.let { MANIFEST_JSON.decodeFromString(PackManifest.serializer(), it) }
+
 @HiltWorker
 class MapPackDownloadWorker @AssistedInject constructor(
     @Assisted appContext: Context,
@@ -61,6 +64,8 @@ class MapPackDownloadWorker @AssistedInject constructor(
             Data.Builder().putString(KEY_RESULT_ERROR, applicationContext.getString(R.string.download_missing_version)).build()
         )
         val manifestJson = inputData.getString(KEY_MANIFEST_JSON)
+        val installDir = packStateStore.generationDir(packVersion, id.toString())
+        val stagingDir = packStateStore.stagingDir(packVersion)
 
         setForeground(createForegroundInfo())
 
@@ -83,11 +88,11 @@ class MapPackDownloadWorker @AssistedInject constructor(
             )
 
             // 2. Extract
-            val installDir = packStateStore.packDir(packVersion)
+            stagingDir.deleteRecursively()
             setProgressAsync(Data.Builder()
                 .putString("phase", DownloadProgress.Phase.EXTRACTING.name)
                 .build())
-            packExtractor.extract(zipFile, installDir)
+            packExtractor.extract(zipFile, stagingDir)
 
             // 3 + 4. Verify (if manifest available) then install. Delegated to
             // PackInstaller so the verify-fail cleanup + current.json write are
@@ -95,22 +100,29 @@ class MapPackDownloadWorker @AssistedInject constructor(
             setProgressAsync(Data.Builder()
                 .putString("phase", DownloadProgress.Phase.VERIFYING.name)
                 .build())
-            val manifest = manifestJson?.let {
-                try { MANIFEST_JSON.decodeFromString(PackManifest.serializer(), it) } catch (_: Exception) { null }
-            }
+            // A legacy request may omit a manifest, but present-yet-invalid JSON
+            // must fail closed. Treating decode failure as null would silently
+            // skip every component checksum before replacing the live pack.
+            val manifest = decodeWorkerManifest(manifestJson)
             setProgressAsync(Data.Builder()
                 .putString("phase", DownloadProgress.Phase.INSTALLING.name)
                 .build())
             val outcome = packInstaller.finalize(
-                installDir = installDir,
+                installDir = stagingDir,
+                finalDir = installDir,
                 packVersion = packVersion,
                 manifest = manifest,
                 manifestJson = manifestJson,
                 zipLength = zipFile.length(),
             )
-            if (outcome is PackInstaller.Outcome.VerificationFailed) {
+            if (outcome !is PackInstaller.Outcome.Installed) {
+                val message = when (outcome) {
+                    is PackInstaller.Outcome.VerificationFailed -> outcome.message
+                    is PackInstaller.Outcome.InstallationFailed -> outcome.message
+                    PackInstaller.Outcome.Installed -> error("Handled above")
+                }
                 return Result.failure(
-                    Data.Builder().putString(KEY_RESULT_ERROR, outcome.message).build()
+                    Data.Builder().putString(KEY_RESULT_ERROR, message).build()
                 )
             }
 
@@ -120,11 +132,11 @@ class MapPackDownloadWorker @AssistedInject constructor(
 
             Result.success()
         } catch (e: Exception) {
-            // A download/extract failure may have created a half-written v<version>
-            // dir; remove it and the base dir if no installed pack remains so a
-            // failed attempt leaves no confusing empty directory behind.
+            // A download/extract failure may have created a half-written staging
+            // dir. Never delete v<version> here: on a same-version repair it is
+            // the still-valid live pack and must survive a failed replacement.
             runCatching {
-                packStateStore.packDir(packVersion).deleteRecursively()
+                stagingDir.deleteRecursively()
                 packStateStore.cleanupIfEmpty()
             }
             Result.failure(Data.Builder().putString(KEY_RESULT_ERROR, e.message).build())

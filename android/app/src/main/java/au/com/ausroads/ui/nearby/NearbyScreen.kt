@@ -1,19 +1,19 @@
 /*
  * NearbyScreen — the "Nearby" tab.
  *
- * Self-contained Material 3 screen (no external navigation callbacks): it shows
+ * Material 3 screen: it shows
  * the reference coordinate in several notations, a always-visible emergency
  * summary (nearest hospital + police), a horizontally scrollable row of
  * category filter chips, and a distance-sorted result list for the selected
- * category. Sharing / "view on map" is done with a geo: intent fired through
- * the LocalContext, so the screen needs nothing wired in from above.
+ * category. Nearby results return to the app's own map with a selected marker;
+ * coordinate/emergency sharing remains an explicit external action.
  */
 @file:Suppress("LongMethod", "TooManyFunctions")
 
 package au.com.ausroads.ui.nearby
 
 import android.content.Intent
-import android.net.Uri
+import android.location.Location
 import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
@@ -54,8 +54,12 @@ import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.material3.TopAppBar
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.vector.ImageVector
@@ -68,6 +72,10 @@ import au.com.ausroads.R
 import au.com.ausroads.core.geo.CoordinateFormatter
 import au.com.ausroads.core.model.GeoPoint
 import au.com.ausroads.offline.search.PoiCategory
+import au.com.ausroads.offline.search.SearchResult
+import au.com.ausroads.ui.map.rememberForegroundLocationPermissionState
+import au.com.ausroads.ui.map.rememberUserLocation
+import au.com.ausroads.ui.map.isLocationFixFresh
 import java.util.Locale
 
 /** Friendly label string-resource for each [PoiCategory]. */
@@ -108,9 +116,51 @@ private fun PoiCategory.icon(): ImageVector = when (this) {
 fun NearbyScreen(
     modifier: Modifier = Modifier,
     viewModel: NearbyViewModel = hiltViewModel(),
+    onViewOnMap: (SearchResult) -> Unit = {},
 ) {
     val state by viewModel.uiState.collectAsState()
     val context = LocalContext.current
+    val locationPermission = rememberForegroundLocationPermissionState(context)
+    val userLocation = rememberUserLocation(locationPermission.isGranted)
+    var appliedLocation by remember { mutableStateOf<Location?>(null) }
+    var minimumFixTimeMillis by remember { mutableStateOf(0L) }
+
+    LaunchedEffect(
+        locationPermission.isGranted,
+        userLocation.value,
+        appliedLocation,
+        minimumFixTimeMillis,
+    ) {
+        if (!locationPermission.isGranted) {
+            appliedLocation = null
+            minimumFixTimeMillis = 0L
+            viewModel.resetReference()
+            return@LaunchedEffect
+        }
+        val fix = userLocation.value
+        val now = System.currentTimeMillis()
+        val previous = appliedLocation
+        val freshFix = fix?.takeIf {
+            isFreshNearbyFix(
+                fixTimeMillis = it.time,
+                nowMillis = now,
+                minimumFixTimeMillis = minimumFixTimeMillis,
+            )
+        }
+        if (freshFix == null) {
+            appliedLocation = null
+            viewModel.resetReference()
+            return@LaunchedEffect
+        }
+        val shouldApply = shouldApplyNearbyFix(
+            previous = previous,
+            next = freshFix,
+        )
+        if (shouldApply) {
+            viewModel.setReference(latitude = freshFix.latitude, longitude = freshFix.longitude)
+            appliedLocation = Location(freshFix)
+        }
+    }
 
     val shareAt: (Double, Double, String?) -> Unit = { lat, lon, label ->
         shareLocation(context, lat, lon, label)
@@ -133,6 +183,34 @@ fun NearbyScreen(
             CoordinatesCard(
                 reference = viewModel.reference,
                 onShare = { shareAt(viewModel.reference.latitude, viewModel.reference.longitude, null) },
+                locationStatus = stringResource(
+                    when {
+                        appliedLocation != null -> R.string.nearby_using_device_location
+                        locationPermission.foregroundNeedsSettings ->
+                            R.string.nearby_location_permission_settings
+                        locationPermission.isGranted -> R.string.nearby_waiting_for_location
+                        else -> R.string.nearby_using_adelaide_fallback
+                    },
+                ),
+                onUseMyLocation = {
+                    if (locationPermission.isGranted) {
+                        appliedLocation = null
+                        minimumFixTimeMillis = System.currentTimeMillis()
+                    } else {
+                        locationPermission.request()
+                    }
+                },
+                useMyLocationLabel = stringResource(
+                    if (appliedLocation == null) {
+                        if (locationPermission.foregroundNeedsSettings) {
+                            R.string.nearby_open_location_settings
+                        } else {
+                            R.string.nearby_use_my_location
+                        }
+                    } else {
+                        R.string.nearby_refresh_location
+                    },
+                ),
             )
 
             EmergencySection(
@@ -150,7 +228,8 @@ fun NearbyScreen(
                 selected = state.selected,
                 results = state.results,
                 isLoading = state.isLoading,
-                onShare = shareAt,
+                searchUnavailable = state.searchUnavailable,
+                onViewOnMap = onViewOnMap,
             )
         }
     }
@@ -160,6 +239,9 @@ fun NearbyScreen(
 private fun CoordinatesCard(
     reference: GeoPoint,
     onShare: () -> Unit,
+    locationStatus: String,
+    onUseMyLocation: () -> Unit,
+    useMyLocationLabel: String,
 ) {
     Card(
         modifier = Modifier.fillMaxWidth(),
@@ -174,6 +256,11 @@ private fun CoordinatesCard(
             Text(
                 text = stringResource(R.string.nearby_coordinates),
                 style = MaterialTheme.typography.titleMedium,
+            )
+            Text(
+                text = locationStatus,
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
             )
             Spacer(Modifier.height(4.dp))
             CoordinateRow(
@@ -193,6 +280,17 @@ private fun CoordinatesCard(
                 Icon(Icons.Filled.Share, contentDescription = null, modifier = Modifier.size(18.dp))
                 Text(
                     text = stringResource(R.string.nearby_share_location),
+                    modifier = Modifier.padding(start = 8.dp),
+                )
+            }
+            TextButton(onClick = onUseMyLocation) {
+                Icon(
+                    Icons.Filled.Place,
+                    contentDescription = null,
+                    modifier = Modifier.size(18.dp),
+                )
+                Text(
+                    text = useMyLocationLabel,
                     modifier = Modifier.padding(start = 8.dp),
                 )
             }
@@ -339,9 +437,20 @@ private fun ResultsSection(
     selected: PoiCategory?,
     results: List<NearbyResult>,
     isLoading: Boolean,
-    onShare: (Double, Double, String?) -> Unit,
+    searchUnavailable: Boolean,
+    onViewOnMap: (SearchResult) -> Unit,
 ) {
     when {
+        searchUnavailable -> {
+            Text(
+                text = stringResource(R.string.nearby_search_unavailable),
+                style = MaterialTheme.typography.bodyMedium,
+                color = MaterialTheme.colorScheme.error,
+                textAlign = TextAlign.Center,
+                modifier = Modifier.fillMaxWidth().padding(vertical = 16.dp),
+            )
+        }
+
         isLoading -> {
             Row(
                 modifier = Modifier.fillMaxWidth().padding(vertical = 24.dp),
@@ -371,7 +480,7 @@ private fun ResultsSection(
                     style = MaterialTheme.typography.titleMedium,
                 )
                 results.forEach { item ->
-                    ResultRow(item = item, onShare = onShare)
+                    ResultRow(item = item, onViewOnMap = onViewOnMap)
                 }
             }
         }
@@ -381,7 +490,7 @@ private fun ResultsSection(
 @Composable
 private fun ResultRow(
     item: NearbyResult,
-    onShare: (Double, Double, String?) -> Unit,
+    onViewOnMap: (SearchResult) -> Unit,
 ) {
     Card(
         modifier = Modifier.fillMaxWidth(),
@@ -412,7 +521,7 @@ private fun ResultRow(
                 )
             }
             IconButton(
-                onClick = { onShare(item.result.latitude, item.result.longitude, item.result.name) },
+                onClick = { onViewOnMap(item.result) },
             ) {
                 Icon(
                     Icons.Filled.Place,
@@ -432,8 +541,8 @@ private fun formatDistance(meters: Double): String =
     }
 
 /**
- * Fire a geo: intent for [lat]/[lon] through a chooser. Best-effort: if no app
- * can handle it the call is silently ignored rather than crashing.
+ * Share a human-readable coordinate through ordinary messaging/email targets.
+ * Best-effort: if no app can handle it, the call is ignored rather than crashing.
  */
 private fun shareLocation(
     context: android.content.Context,
@@ -441,12 +550,51 @@ private fun shareLocation(
     lon: Double,
     label: String?,
 ) {
-    val coords = String.format(Locale.US, "%.6f,%.6f", lat, lon)
-    val query = if (label.isNullOrBlank()) coords else "$coords($label)"
-    val geoUri = Uri.parse("geo:$coords?q=$query")
-    val intent = Intent(Intent.ACTION_VIEW, geoUri)
-    val chooser = Intent.createChooser(intent, context.getString(R.string.nearby_view_on_map))
+    val intent = Intent(Intent.ACTION_SEND)
+        .setType("text/plain")
+        .putExtra(Intent.EXTRA_TEXT, locationShareText(lat, lon, label))
+    val chooser = Intent.createChooser(intent, context.getString(R.string.nearby_share_location))
     runCatching { context.startActivity(chooser) }
 }
 
+internal fun locationShareText(lat: Double, lon: Double, label: String?): String {
+    val coords = String.format(Locale.US, "%.6f,%.6f", lat, lon)
+    val mapUrl = String.format(
+        Locale.US,
+        "https://www.openstreetmap.org/?mlat=%.6f&mlon=%.6f#map=16/%.6f/%.6f",
+        lat,
+        lon,
+        lat,
+        lon,
+    )
+    return listOfNotNull(label?.takeIf(String::isNotBlank), coords, mapUrl).joinToString("\n")
+}
+
+internal fun isFreshNearbyFix(
+    fixTimeMillis: Long,
+    nowMillis: Long,
+    minimumFixTimeMillis: Long,
+): Boolean {
+    return isLocationFixFresh(
+        fixTimeMillis = fixTimeMillis,
+        nowMillis = nowMillis,
+        minimumFixTimeMillis = minimumFixTimeMillis,
+    )
+}
+
+private fun shouldApplyNearbyFix(previous: Location?, next: Location?): Boolean {
+    if (next == null) return false
+    if (previous == null) return true
+    val movedMeters = previous.distanceTo(next)
+    val elapsedMillis = next.time - previous.time
+    val accuracyImproved = next.hasAccuracy() && previous.hasAccuracy() &&
+        next.accuracy + MEANINGFUL_ACCURACY_GAIN_METERS < previous.accuracy
+    return movedMeters >= MIN_REFERENCE_MOVE_METERS ||
+        elapsedMillis >= REFERENCE_REFRESH_INTERVAL_MS ||
+        accuracyImproved
+}
+
 private const val METERS_PER_KM = 1000.0
+private const val REFERENCE_REFRESH_INTERVAL_MS = 60_000L
+private const val MIN_REFERENCE_MOVE_METERS = 100f
+private const val MEANINGFUL_ACCURACY_GAIN_METERS = 50f

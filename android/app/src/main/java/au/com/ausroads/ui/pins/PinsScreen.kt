@@ -26,6 +26,7 @@ import androidx.compose.material.icons.filled.Delete
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
+import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.FloatingActionButton
 import androidx.compose.material3.Icon
@@ -77,6 +78,9 @@ fun PinsScreen(
 ) {
     val pins by viewModel.pins.collectAsState()
     var showAddDialog by remember { mutableStateOf(false) }
+    var isAddingPin by remember { mutableStateOf(false) }
+    var addPinError by remember { mutableStateOf<String?>(null) }
+    val pinSaveFailedMessage = stringResource(R.string.map_pin_save_failed)
     var pinToEdit by remember { mutableStateOf<Pin?>(null) }
 
     Scaffold(
@@ -108,10 +112,31 @@ fun PinsScreen(
 
     if (showAddDialog) {
         AddPinDialog(
-            onDismiss = { showAddDialog = false },
+            isSaving = isAddingPin,
+            error = addPinError,
+            onDismiss = {
+                if (!isAddingPin) {
+                    showAddDialog = false
+                    addPinError = null
+                }
+            },
             onConfirm = { name, lat, lon, color ->
-                viewModel.addPinAt(longitude = lon, latitude = lat, name = name, color = color)
-                showAddDialog = false
+                isAddingPin = true
+                addPinError = null
+                viewModel.addPinAt(
+                    longitude = lon,
+                    latitude = lat,
+                    name = name,
+                    color = color,
+                    onSaved = {
+                        isAddingPin = false
+                        showAddDialog = false
+                    },
+                    onError = {
+                        isAddingPin = false
+                        addPinError = pinSaveFailedMessage
+                    },
+                )
             },
         )
     }
@@ -233,6 +258,8 @@ private fun ColorPickerRow(
 private fun AddPinDialog(
     onDismiss: () -> Unit,
     onConfirm: (name: String, lat: Double, lon: Double, color: String) -> Unit,
+    isSaving: Boolean,
+    error: String?,
 ) {
     var name by remember { mutableStateOf("") }
     var latText by remember { mutableStateOf("-34.9285") }
@@ -283,6 +310,13 @@ private fun AddPinDialog(
                     selectedColor = selectedColor,
                     onColorSelected = { selectedColor = it },
                 )
+                error?.let { message ->
+                    Text(
+                        text = message,
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.error,
+                    )
+                }
             }
         },
         confirmButton = {
@@ -292,13 +326,17 @@ private fun AddPinDialog(
                     val lon = lonText.toDoubleOrNull() ?: return@TextButton
                     onConfirm(name.trim(), lat, lon, selectedColor)
                 },
-                enabled = canSubmit,
+                enabled = canSubmit && !isSaving,
             ) {
-                Text(stringResource(R.string.pin_add_confirm))
+                if (isSaving) {
+                    CircularProgressIndicator(modifier = Modifier.size(18.dp), strokeWidth = 2.dp)
+                } else {
+                    Text(stringResource(R.string.pin_add_confirm))
+                }
             }
         },
         dismissButton = {
-            TextButton(onClick = onDismiss) {
+            TextButton(onClick = onDismiss, enabled = !isSaving) {
                 Text(stringResource(R.string.cancel))
             }
         },

@@ -39,6 +39,13 @@ class MapPackManager @Inject constructor(
     private val _installed = MutableStateFlow<InstalledPack?>(null)
     val installed: StateFlow<InstalledPack?> = _installed.asStateFlow()
 
+    // `installed == null` is ambiguous until launch reconciliation has finished:
+    // it can mean either "still loading" or "no installed pack".
+    // Expose that distinction so map consumers can safely switch to the bundled
+    // fallback when reconciliation removes a stale descriptor.
+    private val _installedStateInitialized = MutableStateFlow(false)
+    val installedStateInitialized: StateFlow<Boolean> = _installedStateInitialized.asStateFlow()
+
     private val _inFlight = MutableStateFlow<DownloadProgress?>(null)
     val inFlight: StateFlow<DownloadProgress?> = _inFlight.asStateFlow()
 
@@ -52,8 +59,14 @@ class MapPackManager @Inject constructor(
 
     init {
         scope.launch {
-            evictionManager.reconcile()
-            _installed.value = packStateStore.readCurrent()
+            try {
+                evictionManager.reconcile()
+                _installed.value = packStateStore.readCurrent()
+            } finally {
+                // Never strand search/routing startup behind this readiness gate
+                // if filesystem reconciliation itself fails unexpectedly.
+                _installedStateInitialized.value = true
+            }
         }
 
         // Observe WorkManager for in-flight downloads
@@ -136,8 +149,14 @@ class MapPackManager @Inject constructor(
     }
 
     fun currentPackDir(): java.io.File? {
-        val version = _installed.value?.version ?: return null
-        if (version.isEmpty()) return null
-        return packStateStore.packDir(version)
+        val pack = _installed.value ?: return null
+        return packStateStore.packDir(pack)
+    }
+
+    /** Restore the previous disk generation after app-level component preparation fails. */
+    suspend fun rollbackFailedActivation(failedPack: InstalledPack): InstalledPack? {
+        val restored = evictionManager.rollbackFailedInstall(failedPack)
+        _installed.value = restored
+        return restored
     }
 }

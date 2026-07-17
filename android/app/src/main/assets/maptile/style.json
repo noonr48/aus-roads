@@ -2,7 +2,7 @@
   "version": 8,
   "name": "aus-roads-adelaide-test",
   "metadata": {
-    "au.com.ausroads:bounds": "138.55,-35.00,138.70,-34.85",
+    "au.com.ausroads:bounds": "138.4,-35.2,139.0,-34.6",
     "au.com.ausroads:center": "138.62,-34.92,11",
     "au.com.ausroads:minzoom": 0,
     "au.com.ausroads:maxzoom": 14,
@@ -14,7 +14,6 @@
       "url": "asset://maptile/adelaide-test-tiles.mbtiles"
     }
   },
-  "sprite": "",
   "glyphs": "asset://glyphs/{fontstack}/{range}.pbf",
   "layers": [
     {
@@ -59,15 +58,41 @@
       "paint": { "fill-color": "#d9d5cc", "fill-opacity": 0.7 }
     },
     {
+      "id": "road-minor-casing",
+      "type": "line",
+      "source": "aus-roads-tiles",
+      "source-layer": "transportation",
+      "filter": ["in", "class", "minor", "service", "track"],
+      "minzoom": 10,
+      "layout": { "line-cap": "round", "line-join": "round" },
+      "paint": {
+        "line-color": "#c7cbc9",
+        "line-width": ["interpolate", ["linear"], ["zoom"], 10, 1.2, 14, 3.2, 16, 6.2]
+      }
+    },
+    {
       "id": "road-minor",
       "type": "line",
       "source": "aus-roads-tiles",
       "source-layer": "transportation",
       "filter": ["in", "class", "minor", "service", "track"],
       "minzoom": 10,
+      "layout": { "line-cap": "round", "line-join": "round" },
       "paint": {
-        "line-color": "#ffffff",
-        "line-width": ["interpolate", ["linear"], ["zoom"], 10, 0.5, 14, 2]
+        "line-color": "#fffefa",
+        "line-width": ["interpolate", ["linear"], ["zoom"], 10, 0.6, 14, 2.2, 16, 5.0]
+      }
+    },
+    {
+      "id": "road-secondary-casing",
+      "type": "line",
+      "source": "aus-roads-tiles",
+      "source-layer": "transportation",
+      "filter": ["in", "class", "secondary", "tertiary"],
+      "layout": { "line-cap": "round", "line-join": "round" },
+      "paint": {
+        "line-color": "#c2c7c4",
+        "line-width": ["interpolate", ["linear"], ["zoom"], 8, 1.1, 14, 5.2, 16, 9.2]
       }
     },
     {
@@ -76,9 +101,22 @@
       "source": "aus-roads-tiles",
       "source-layer": "transportation",
       "filter": ["in", "class", "secondary", "tertiary"],
+      "layout": { "line-cap": "round", "line-join": "round" },
       "paint": {
         "line-color": "#ffffff",
-        "line-width": ["interpolate", ["linear"], ["zoom"], 8, 0.5, 14, 4]
+        "line-width": ["interpolate", ["linear"], ["zoom"], 8, 0.5, 14, 4.0, 16, 7.8]
+      }
+    },
+    {
+      "id": "road-primary-casing",
+      "type": "line",
+      "source": "aus-roads-tiles",
+      "source-layer": "transportation",
+      "filter": ["in", "class", "primary", "trunk"],
+      "layout": { "line-cap": "round", "line-join": "round" },
+      "paint": {
+        "line-color": "#d4aa63",
+        "line-width": ["interpolate", ["linear"], ["zoom"], 6, 1.2, 14, 7.2, 16, 12.2]
       }
     },
     {
@@ -87,9 +125,22 @@
       "source": "aus-roads-tiles",
       "source-layer": "transportation",
       "filter": ["in", "class", "primary", "trunk"],
+      "layout": { "line-cap": "round", "line-join": "round" },
       "paint": {
         "line-color": "#ffd591",
-        "line-width": ["interpolate", ["linear"], ["zoom"], 6, 0.5, 14, 6]
+        "line-width": ["interpolate", ["linear"], ["zoom"], 6, 0.5, 14, 6.0, 16, 10.6]
+      }
+    },
+    {
+      "id": "road-motorway-casing",
+      "type": "line",
+      "source": "aus-roads-tiles",
+      "source-layer": "transportation",
+      "filter": ["==", "class", "motorway"],
+      "layout": { "line-cap": "round", "line-join": "round" },
+      "paint": {
+        "line-color": "#c8951e",
+        "line-width": ["interpolate", ["linear"], ["zoom"], 5, 1.2, 14, 9.2, 16, 15.2]
       }
     },
     {
@@ -98,9 +149,10 @@
       "source": "aus-roads-tiles",
       "source-layer": "transportation",
       "filter": ["==", "class", "motorway"],
+      "layout": { "line-cap": "round", "line-join": "round" },
       "paint": {
         "line-color": "#f7c948",
-        "line-width": ["interpolate", ["linear"], ["zoom"], 5, 0.5, 14, 8]
+        "line-width": ["interpolate", ["linear"], ["zoom"], 5, 0.5, 14, 8.0, 16, 13.4]
       }
     },
     {
@@ -113,7 +165,7 @@
         "symbol-placement": "line",
         "text-field": ["coalesce", ["get", "name:en"], ["get", "name"]],
         "text-font": ["Open Sans Regular"],
-        "text-size": ["interpolate", ["linear"], ["zoom"], 11, 10, 14, 13]
+        "text-size": ["interpolate", ["linear"], ["zoom"], 11, 10, 14, 13, 16, 16]
       },
       "paint": {
         "text-color": "#1a3a52",
@@ -131,7 +183,7 @@
       "layout": {
         "text-field": ["coalesce", ["get", "name:en"], ["get", "name"]],
         "text-font": ["Open Sans Regular"],
-        "text-size": ["interpolate", ["linear"], ["zoom"], 9, 10, 14, 14],
+        "text-size": ["interpolate", ["linear"], ["zoom"], 9, 10, 14, 14, 16, 16],
         "text-transform": "uppercase"
       },
       "paint": {
@@ -141,22 +193,56 @@
       }
     },
     {
+      "id": "poi-shop-dot",
+      "type": "circle",
+      "source": "aus-roads-tiles",
+      "source-layer": "poi",
+      "filter": ["all", ["has", "name"], ["==", "class", "shop"], ["<=", "rank", 20]],
+      "minzoom": 14,
+      "paint": {
+        "circle-color": "#a13d72",
+        "circle-radius": ["interpolate", ["linear"], ["zoom"], 14, 3.5, 16, 5.5],
+        "circle-stroke-color": "#ffffff",
+        "circle-stroke-width": 1.2,
+        "circle-opacity": 0.92
+      }
+    },
+    {
+      "id": "poi-dot",
+      "type": "circle",
+      "source": "aus-roads-tiles",
+      "source-layer": "poi",
+      "filter": ["all", ["has", "name"], ["in", "class", "hospital", "railway", "stadium", "park", "school", "college", "library", "fuel", "pharmacy", "attraction", "museum", "grocery", "restaurant", "cafe", "fast_food", "bar"], ["<=", "rank", 8]],
+      "minzoom": 14,
+      "paint": {
+        "circle-color": "#406c7a",
+        "circle-radius": ["interpolate", ["linear"], ["zoom"], 14, 3, 16, 4.8],
+        "circle-stroke-color": "#ffffff",
+        "circle-stroke-width": 1,
+        "circle-opacity": 0.86
+      }
+    },
+    {
       "id": "poi",
       "type": "symbol",
       "source": "aus-roads-tiles",
       "source-layer": "poi",
+      "filter": ["all", ["has", "name"], ["in", "class", "shop", "hospital", "railway", "stadium", "park", "school", "college", "library", "fuel", "pharmacy", "attraction", "museum", "grocery", "restaurant", "cafe", "fast_food", "bar"], ["<=", "rank", 6]],
       "minzoom": 14,
       "layout": {
         "text-field": ["coalesce", ["get", "name:en"], ["get", "name"]],
         "text-font": ["Open Sans Regular"],
-        "text-size": 11,
+        "text-size": ["interpolate", ["linear"], ["zoom"], 14, 10, 16, 13],
         "text-anchor": "top",
-        "text-offset": [0, 0.5]
+        "text-offset": [0, 0.8],
+        "text-max-width": 12,
+        "text-padding": 4,
+        "text-optional": true
       },
       "paint": {
-        "text-color": "#3b2f1d",
+        "text-color": "#3e3a34",
         "text-halo-color": "#ffffff",
-        "text-halo-width": 1
+        "text-halo-width": 1.2
       }
     }
   ]

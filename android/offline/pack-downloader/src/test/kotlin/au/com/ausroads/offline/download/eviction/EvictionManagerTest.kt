@@ -2,8 +2,15 @@ package au.com.ausroads.offline.download.eviction
 
 import au.com.ausroads.offline.download.state.InstalledPack
 import au.com.ausroads.offline.download.state.PackStateStore
+import au.com.ausroads.offline.download.state.installDirectoryName
 import io.mockk.*
+import kotlinx.coroutines.CompletableDeferred
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.async
+import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.test.runTest
+import kotlinx.coroutines.withContext
+import kotlinx.coroutines.withTimeoutOrNull
 import kotlinx.datetime.Instant
 import org.junit.After
 import org.junit.Before
@@ -39,9 +46,11 @@ class EvictionManagerTest {
     fun setUp() {
         tempDir = createTempDir("eviction-test")
         packStateStore = mockk(relaxed = true)
-        every { packStateStore.packDir(any()) } answers {
-            File(tempDir, "v${firstArg<String>()}")
+        every { packStateStore.packDir(any<InstalledPack>()) } answers {
+            File(tempDir, firstArg<InstalledPack>().installDirectoryName())
         }
+        every { packStateStore.regionDir() } returns tempDir
+        every { packStateStore.currentDescriptorExists() } returns false
         evictionManager = EvictionManager(packStateStore)
     }
 
@@ -52,11 +61,9 @@ class EvictionManagerTest {
 
     @Test
     fun `reconcile keeps current and previous versions`() = runTest {
-        val currentDir = File(tempDir, "v1")
-        val previousDir = File(tempDir, "v2")
+        val currentDir = createPackDirectory(packV1)
+        val previousDir = createPackDirectory(packV2)
         val staleDir = File(tempDir, "v0")
-        currentDir.mkdirs()
-        previousDir.mkdirs()
         staleDir.mkdirs()
 
         coEvery { packStateStore.readCurrent() } returns packV1
@@ -71,8 +78,7 @@ class EvictionManagerTest {
 
     @Test
     fun `reconcile reverts to previous when current dir is missing`() = runTest {
-        val previousDir = File(tempDir, "v2")
-        previousDir.mkdirs()
+        createPackDirectory(packV2)
 
         coEvery { packStateStore.readCurrent() } returns packV1
         coEvery { packStateStore.readPrevious() } returns packV2
@@ -90,9 +96,20 @@ class EvictionManagerTest {
 
         evictionManager.reconcile()
 
-        coVerify {
-            packStateStore.writeCurrent(match { it.version == "" && it.totalSizeBytes == 0L })
-        }
+        coVerify { packStateStore.clearCurrent() }
+        coVerify { packStateStore.writePrevious(null) }
+    }
+
+    @Test
+    fun `reconcile restores previous when current descriptor is malformed`() = runTest {
+        createPackDirectory(packV2)
+        coEvery { packStateStore.readCurrent() } returns null
+        coEvery { packStateStore.readPrevious() } returns packV2
+        every { packStateStore.currentDescriptorExists() } returns true
+
+        evictionManager.reconcile()
+
+        coVerify { packStateStore.writeCurrent(packV2) }
         coVerify { packStateStore.writePrevious(null) }
     }
 
@@ -116,4 +133,72 @@ class EvictionManagerTest {
 
         assertThat(staleDir.exists()).isFalse()
     }
+
+    @Test
+    fun `failed activation restores previous physical generation and removes rejected bytes`() = runTest {
+        val previous = packV1.copy(directoryName = "v1-old")
+        val rejected = packV1.copy(
+            installedAt = Instant.parse("2026-03-01T00:00:00Z"),
+            directoryName = "v1-repair",
+        )
+        val previousDir = createPackDirectory(previous)
+        val rejectedDir = createPackDirectory(rejected)
+        coEvery { packStateStore.readCurrent() } returns rejected
+        coEvery { packStateStore.readPrevious() } returns previous
+
+        val restored = evictionManager.rollbackFailedInstall(rejected)
+
+        assertThat(restored).isEqualTo(previous)
+        assertThat(previousDir.exists()).isTrue()
+        assertThat(rejectedDir.exists()).isFalse()
+        coVerify { packStateStore.writeCurrent(previous) }
+        coVerify { packStateStore.writePrevious(null) }
+    }
+
+    @Test
+    fun `reconcile cannot delete a version promoted by concurrent install`() = runBlocking {
+        val currentDir = createPackDirectory(packV1)
+        val promotedDir = File(tempDir, "v2")
+        val reconcileHoldingLock = CompletableDeferred<Unit>()
+        val releaseReconcile = CompletableDeferred<Unit>()
+        val promotionStarted = CompletableDeferred<Unit>()
+
+        coEvery { packStateStore.readCurrent() } returns packV1
+        coEvery { packStateStore.readPrevious() } coAnswers {
+            reconcileHoldingLock.complete(Unit)
+            releaseReconcile.await()
+            null
+        }
+
+        val reconcile = async(Dispatchers.Default) { evictionManager.reconcile() }
+        reconcileHoldingLock.await()
+        val install = async(Dispatchers.Default) {
+            evictionManager.onNewInstall(packV2) {
+                promotionStarted.complete(Unit)
+                promotedDir.mkdirs()
+                null
+            }
+        }
+
+        // Promotion is part of the same transaction and cannot begin while
+        // reconciliation owns the mutation lock.
+        val startedWhileReconciling = withContext(Dispatchers.Default) {
+            withTimeoutOrNull(200) { promotionStarted.await() }
+        }
+        assertThat(startedWhileReconciling).isNull()
+
+        releaseReconcile.complete(Unit)
+        reconcile.await()
+        assertThat(install.await()).isNull()
+
+        assertThat(currentDir.exists()).isTrue()
+        assertThat(promotedDir.exists()).isTrue()
+        coVerify { packStateStore.writeCurrent(packV2) }
+    }
+
+    private fun createPackDirectory(pack: InstalledPack): File =
+        File(tempDir, pack.installDirectoryName()).apply {
+            mkdirs()
+            File(this, pack.tilesPath).writeText("tiles")
+        }
 }

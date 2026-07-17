@@ -7,12 +7,13 @@ import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
-import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.lazy.itemsIndexed
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Clear
 import androidx.compose.material.icons.filled.Search
@@ -29,10 +30,14 @@ import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.platform.LocalFocusManager
+import androidx.compose.ui.platform.LocalSoftwareKeyboardController
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.tooling.preview.Preview
 import au.com.ausroads.offline.search.SearchResult
+import java.util.Locale
+import kotlin.math.abs
 
 @Composable
 fun SearchOverlay(
@@ -44,6 +49,9 @@ fun SearchOverlay(
     val results by viewModel.results.collectAsState()
     val isSearching by viewModel.isSearching.collectAsState()
     val searchFailed by viewModel.searchFailed.collectAsState()
+    val searchUnavailable by viewModel.searchUnavailable.collectAsState()
+    val focusManager = LocalFocusManager.current
+    val keyboardController = LocalSoftwareKeyboardController.current
 
     Column(modifier = modifier) {
         OutlinedTextField(
@@ -83,6 +91,9 @@ fun SearchOverlay(
                     searchFailed -> SearchStatusRow(
                         text = stringResource(R.string.search_error),
                     )
+                    searchUnavailable -> SearchStatusRow(
+                        text = stringResource(R.string.search_unavailable),
+                    )
                     results.isEmpty() -> SearchStatusRow(
                         text = stringResource(R.string.search_no_results, query),
                     )
@@ -90,9 +101,13 @@ fun SearchOverlay(
                         results = results,
                         onResultSelected = { result ->
                             viewModel.onResultSelected(result)
+                            focusManager.clearFocus(force = true)
+                            keyboardController?.hide()
                             onResultSelected(result)
                         },
-                        modifier = Modifier.fillMaxWidth(),
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .heightIn(max = 360.dp),
                     )
                 }
             }
@@ -144,13 +159,7 @@ private fun SearchResultItem(
                 style = MaterialTheme.typography.bodyLarge,
             )
             Text(
-                text = buildString {
-                    append(result.kind.replaceFirstChar { it.uppercase() })
-                    if (!result.className.isNullOrBlank()) {
-                        append(" \u00b7 ")
-                        append(result.className)
-                    }
-                },
+                text = searchResultSubtitle(result),
                 style = MaterialTheme.typography.bodySmall,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
             )
@@ -176,7 +185,13 @@ private fun SearchResultsList(
                     modifier = Modifier.padding(horizontal = 12.dp, vertical = 4.dp),
                 )
             }
-            items(groupResults, key = { "${it.name}-${it.latitude}-${it.longitude}" }) { result ->
+            itemsIndexed(
+                groupResults,
+                key = { index, result ->
+                    "${result.kind}-${result.className}-${result.name}-" +
+                        "${result.latitude}-${result.longitude}-$index"
+                },
+            ) { _, result ->
                 SearchResultItem(
                     result = result,
                     onClick = { onResultSelected(result) },
@@ -187,6 +202,26 @@ private fun SearchResultsList(
 }
 
 internal val KIND_ORDER = listOf("suburb", "road", "poi", "water", "park")
+
+internal fun searchResultSubtitle(result: SearchResult): String = buildString {
+    append(result.kind.replaceFirstChar { it.uppercase() })
+    if (!result.className.isNullOrBlank()) {
+        append(" \u00b7 ")
+        append(result.className)
+    }
+    append(" \u00b7 ")
+    append(formatCoordinate(result.latitude, positive = "N", negative = "S"))
+    append(", ")
+    append(formatCoordinate(result.longitude, positive = "E", negative = "W"))
+}
+
+private fun formatCoordinate(value: Double, positive: String, negative: String): String =
+    String.format(
+        Locale.ROOT,
+        "%.4f\u00b0 %s",
+        abs(value),
+        if (value >= 0.0) positive else negative,
+    )
 
 internal fun groupResultsByKind(results: List<SearchResult>): List<Pair<String, List<SearchResult>>> {
     val grouped = results.groupBy { it.kind }

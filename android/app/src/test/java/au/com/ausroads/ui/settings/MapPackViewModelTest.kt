@@ -3,6 +3,7 @@ package au.com.ausroads.ui.settings
 import android.content.Context
 import au.com.ausroads.core.model.Bbox
 import au.com.ausroads.core.model.Region
+import au.com.ausroads.di.PackRuntimeCoordinator
 import au.com.ausroads.offline.download.MapPackManager
 import au.com.ausroads.offline.download.state.DownloadProgress
 import au.com.ausroads.offline.download.state.InstalledPack
@@ -38,9 +39,11 @@ class MapPackViewModelTest {
 
     private val testDispatcher = UnconfinedTestDispatcher()
     private lateinit var mapPackManager: MapPackManager
+    private lateinit var packRuntimeCoordinator: PackRuntimeCoordinator
     private lateinit var viewModel: MapPackViewModel
 
     private val installedFlow = MutableStateFlow<InstalledPack?>(null)
+    private val installedStateInitializedFlow = MutableStateFlow(false)
     private val inFlightFlow = MutableStateFlow<DownloadProgress?>(null)
     private val downloadErrorFlow = MutableStateFlow<String?>(null)
 
@@ -51,10 +54,12 @@ class MapPackViewModelTest {
         Dispatchers.setMain(testDispatcher)
         mapPackManager = mockk(relaxed = true)
         every { mapPackManager.installed } returns installedFlow
+        every { mapPackManager.installedStateInitialized } returns installedStateInitializedFlow
         every { mapPackManager.inFlight } returns inFlightFlow
         every { mapPackManager.downloadError } returns downloadErrorFlow
         val context = mockk<Context>(relaxed = true)
-        viewModel = MapPackViewModel(context, mapPackManager, baseUrl)
+        packRuntimeCoordinator = PackRuntimeCoordinator()
+        viewModel = MapPackViewModel(context, mapPackManager, packRuntimeCoordinator, baseUrl)
     }
 
     @After
@@ -65,6 +70,27 @@ class MapPackViewModelTest {
     @Test
     fun `initial state has no installed pack`() = runTest {
         assertThat(viewModel.installed.value).isNull()
+    }
+
+    @Test
+    fun `installed state readiness from manager is exposed`() = runTest {
+        installedStateInitializedFlow.value = true
+
+        assertThat(viewModel.installedStateInitialized.value).isTrue()
+    }
+
+    @Test
+    fun `render pack advances only after runtime components publish`() = runTest {
+        val installed = installedPack(version = "2026-06-01")
+        installedFlow.value = installed
+
+        assertThat(viewModel.renderInstalled.value).isNull()
+        assertThat(viewModel.renderStateInitialized.value).isFalse()
+
+        packRuntimeCoordinator.publish(installed)
+
+        assertThat(viewModel.renderInstalled.value).isEqualTo(installed)
+        assertThat(viewModel.renderStateInitialized.value).isTrue()
     }
 
     @Test
@@ -115,15 +141,15 @@ class MapPackViewModelTest {
     }
 
     @Test
-    fun `onDownloadClick does not download on Unchanged when installed version matches`() = runTest {
+    fun `onDownloadClick repairs same version when user requests redownload`() = runTest {
         installedFlow.value = installedPack(version = "2026-06-01")
         coEvery { mapPackManager.fetchLatestManifest() } returns
             ManifestFetchResult.Unchanged(buildManifest(), "{}")
 
         viewModel.onDownloadClick()
 
-        verify(exactly = 0) { mapPackManager.startDownload(any(), any(), any()) }
-        assertThat(viewModel.uiState.value.error).isNotNull()
+        verify { mapPackManager.startDownload(any(), "2026-06-01", any()) }
+        assertThat(viewModel.uiState.value.error).isNull()
     }
 
     private fun installedPack(version: String) = InstalledPack(
