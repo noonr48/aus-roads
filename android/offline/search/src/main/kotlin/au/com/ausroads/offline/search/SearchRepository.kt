@@ -1,5 +1,15 @@
 package au.com.ausroads.offline.search
 
+/** A fixed speed camera extracted into the pack's optional road_cameras table. */
+data class SpeedCameraPoint(
+    val latitude: Double,
+    val longitude: Double,
+    /** Enforced limit in km/h when known, else null. */
+    val maxspeedKmh: Int?,
+    /** Name of the enforced way when known, else null. */
+    val wayName: String?,
+)
+
 interface SearchRepository {
     /**
      * Search for features matching the given query.
@@ -77,6 +87,24 @@ interface SearchRepository {
         longitude: Double,
         maxDistanceDegrees: Double = 0.05,
     ): Int?
+
+    /**
+     * Fixed speed cameras near the given coordinate (offline), nearest-first.
+     *
+     * Queries the optional `road_cameras` table (populated by the pack pipeline
+     * from OSM `highway=speed_camera` nodes and `enforcement=maxspeed` relations).
+     * Packs built before the camera layer existed have no such table; this method
+     * tolerates that and returns an empty list rather than throwing.
+     *
+     * @param maxDistanceDegrees Half-width of the search bbox in degrees.
+     * @param limit Maximum number of cameras returned.
+     */
+    suspend fun camerasNear(
+        latitude: Double,
+        longitude: Double,
+        maxDistanceDegrees: Double = 0.05,
+        limit: Int = 5,
+    ): List<SpeedCameraPoint>
 
     /**
      * Open the search database from the given file path.

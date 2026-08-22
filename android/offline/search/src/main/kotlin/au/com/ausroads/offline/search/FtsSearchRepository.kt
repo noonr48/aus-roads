@@ -245,6 +245,59 @@ class FtsSearchRepository @Inject constructor() : SearchRepository {
             }
         }
 
+    override suspend fun camerasNear(
+        latitude: Double,
+        longitude: Double,
+        maxDistanceDegrees: Double,
+        limit: Int,
+    ): List<SpeedCameraPoint> =
+        withContext(Dispatchers.IO) {
+            val database = db ?: return@withContext emptyList()
+
+            // Planar-nearest over the optional road_cameras table. Old packs were
+            // built before this table existed, so a missing-table SQLiteException
+            // is expected and degrades to an empty list rather than propagating.
+            val cosLat = Math.cos(Math.toRadians(latitude))
+            val sql =
+                """
+                SELECT lat, lon, maxspeed_kmh, way_name
+                FROM road_cameras
+                WHERE lat BETWEEN ? AND ? AND lon BETWEEN ? AND ?
+                ORDER BY ((lat - ?) * (lat - ?)) +
+                         ((lon - ?) * (lon - ?) * ? * ?) ASC
+                LIMIT ?
+                """.trimIndent()
+            val args = arrayOf(
+                (latitude - maxDistanceDegrees).toString(), (latitude + maxDistanceDegrees).toString(),
+                (longitude - maxDistanceDegrees).toString(), (longitude + maxDistanceDegrees).toString(),
+                latitude.toString(), latitude.toString(),
+                longitude.toString(), longitude.toString(),
+                cosLat.toString(), cosLat.toString(),
+                limit.toString(),
+            )
+
+            try {
+                database.rawQuery(sql, args).use { c ->
+                    buildList {
+                        while (c.moveToNext()) {
+                            if (c.isNull(0) || c.isNull(1)) continue
+                            add(
+                                SpeedCameraPoint(
+                                    latitude = c.getDouble(0),
+                                    longitude = c.getDouble(1),
+                                    maxspeedKmh = if (c.isNull(2)) null else c.getInt(2),
+                                    wayName = if (c.isNull(3)) null else c.getString(3),
+                                ),
+                            )
+                        }
+                    }
+                }
+            } catch (_: SQLiteException) {
+                // road_cameras table absent (pre-camera-layer pack): no data available.
+                emptyList()
+            }
+        }
+
     /**
      * Drain a cursor positioned before its first row into [SearchResult]s,
      * reading the leading `name, kind, class, lat, lon` columns. Extra trailing

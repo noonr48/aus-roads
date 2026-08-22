@@ -3,6 +3,7 @@ package au.com.ausroads.feature.search
 import au.com.ausroads.offline.search.PoiCategory
 import au.com.ausroads.offline.search.SearchRepository
 import au.com.ausroads.offline.search.SearchResult
+import au.com.ausroads.offline.search.SpeedCameraPoint
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.test.StandardTestDispatcher
@@ -139,6 +140,13 @@ private class FakeSearchRepository : SearchRepository {
         longitude: Double,
         maxDistanceDegrees: Double,
     ): Int? = null
+
+    override suspend fun camerasNear(
+        latitude: Double,
+        longitude: Double,
+        maxDistanceDegrees: Double,
+        limit: Int,
+    ): List<SpeedCameraPoint> = emptyList()
 
     override fun open(dbPath: String) {}
 

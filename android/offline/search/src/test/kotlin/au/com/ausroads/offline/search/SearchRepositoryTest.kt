@@ -49,6 +49,13 @@ class SearchRepositoryTest {
             longitude: Double,
             maxDistanceDegrees: Double,
         ): Int? = null
+
+        override suspend fun camerasNear(
+            latitude: Double,
+            longitude: Double,
+            maxDistanceDegrees: Double,
+            limit: Int,
+        ): List<SpeedCameraPoint> = emptyList()
     }
 
     @Test

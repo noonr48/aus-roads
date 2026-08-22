@@ -3,6 +3,7 @@ package au.com.ausroads.ui.nearby
 import au.com.ausroads.offline.search.PoiCategory
 import au.com.ausroads.offline.search.SearchRepository
 import au.com.ausroads.offline.search.SearchResult
+import au.com.ausroads.offline.search.SpeedCameraPoint
 import com.google.common.truth.Truth.assertThat
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.ExperimentalCoroutinesApi
@@ -336,6 +337,13 @@ private class FakeSearchRepository : SearchRepository {
         longitude: Double,
         maxDistanceDegrees: Double,
     ): Int? = null
+
+    override suspend fun camerasNear(
+        latitude: Double,
+        longitude: Double,
+        maxDistanceDegrees: Double,
+        limit: Int,
+    ): List<SpeedCameraPoint> = emptyList()
 
     override fun open(dbPath: String) {}
 
