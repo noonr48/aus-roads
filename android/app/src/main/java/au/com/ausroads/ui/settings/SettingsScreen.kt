@@ -19,6 +19,7 @@ import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.selection.selectable
 import androidx.compose.foundation.verticalScroll
+import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.HorizontalDivider
@@ -183,9 +184,14 @@ fun SettingsScreen(
                         stringResource(R.string.download_failed_generic, it)
                     },
                     info = packUiState.info,
+                    showUninstallConfirm = packUiState.showUninstallConfirm,
+                    isDeleting = packUiState.isDeleting,
                     onDownloadClick = mapPackViewModel::onDownloadClick,
                     onCancelClick = mapPackViewModel::onCancelClick,
                     onRetryClick = mapPackViewModel::onRetryClick,
+                    onUninstallClick = mapPackViewModel::onUninstallClick,
+                    onUninstallDismissed = mapPackViewModel::onUninstallDismissed,
+                    onUninstallConfirmed = mapPackViewModel::onUninstallConfirmed,
                 )
             } else {
                 // The offline (privacy flagship) flavor cannot reach the network;
@@ -297,9 +303,14 @@ private fun MapPackSection(
     error: String?,
     workerError: String?,
     info: String?,
+    showUninstallConfirm: Boolean,
+    isDeleting: Boolean,
     onDownloadClick: () -> Unit,
     onCancelClick: () -> Unit,
     onRetryClick: () -> Unit,
+    onUninstallClick: () -> Unit,
+    onUninstallDismissed: () -> Unit,
+    onUninstallConfirmed: () -> Unit,
     modifier: Modifier = Modifier,
 ) {
     Column(
@@ -350,6 +361,9 @@ private fun MapPackSection(
             TextButton(onClick = onDownloadClick, enabled = !isChecking) {
                 Text(stringResource(R.string.settings_redownload))
             }
+            TextButton(onClick = onUninstallClick, enabled = !isDeleting) {
+                Text(stringResource(R.string.settings_map_pack_uninstall))
+            }
         } else {
             Text(
                 text = stringResource(R.string.settings_map_pack_none),
@@ -388,6 +402,24 @@ private fun MapPackSection(
                 text = info,
                 style = MaterialTheme.typography.bodySmall,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+        }
+
+        if (showUninstallConfirm) {
+            AlertDialog(
+                onDismissRequest = onUninstallDismissed,
+                title = { Text(stringResource(R.string.map_pack_uninstall_title)) },
+                text = { Text(stringResource(R.string.map_pack_uninstall_message)) },
+                confirmButton = {
+                    TextButton(onClick = onUninstallConfirmed) {
+                        Text(stringResource(R.string.settings_map_pack_uninstall))
+                    }
+                },
+                dismissButton = {
+                    TextButton(onClick = onUninstallDismissed) {
+                        Text(stringResource(R.string.cancel))
+                    }
+                },
             )
         }
     }

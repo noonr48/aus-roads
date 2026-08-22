@@ -200,4 +200,45 @@ class MapPackViewModelTest {
         ),
         totalSizeBytes = 350L,
     )
+
+    @Test
+    fun `uninstall confirmation flow deletes the pack and surfaces info`() = runTest {
+        coEvery { mapPackManager.deleteInstalled() } returns true
+
+        viewModel.onUninstallClick()
+        assertThat(viewModel.uiState.value.showUninstallConfirm).isTrue()
+
+        viewModel.onUninstallConfirmed()
+
+        coVerify(exactly = 1) { mapPackManager.deleteInstalled() }
+        val state = viewModel.uiState.value
+        assertThat(state.showUninstallConfirm).isFalse()
+        assertThat(state.isDeleting).isFalse()
+        assertThat(state.error).isNull()
+        assertThat(state.info).isNotNull()
+    }
+
+    @Test
+    fun `onUninstallDismissed hides dialog without deleting`() = runTest {
+        viewModel.onUninstallClick()
+        viewModel.onUninstallDismissed()
+
+        assertThat(viewModel.uiState.value.showUninstallConfirm).isFalse()
+        coVerify(exactly = 0) { mapPackManager.deleteInstalled() }
+    }
+
+
+    @Test
+    fun `uninstall failure surfaces an error instead of success info`() = runTest {
+        coEvery { mapPackManager.deleteInstalled() } returns false
+
+        viewModel.onUninstallClick()
+        viewModel.onUninstallConfirmed()
+
+        val state = viewModel.uiState.value
+        assertThat(state.isDeleting).isFalse()
+        assertThat(state.error).isNotNull()
+        assertThat(state.info).isNull()
+    }
+
 }

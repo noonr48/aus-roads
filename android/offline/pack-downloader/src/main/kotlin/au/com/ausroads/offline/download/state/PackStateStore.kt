@@ -29,6 +29,11 @@ class PackStateStore(
         writeJsonFile(File(baseDir, "current.json"), pack)
     }
 
+    /** Deletes the current-pack state file so an uninstalled pack cannot resurrect on restart. */
+    suspend fun clearCurrent() = withContext(Dispatchers.IO) {
+        File(baseDir, "current.json").delete()
+    }
+
     suspend fun writePrevious(pack: InstalledPack?) = withContext(Dispatchers.IO) {
         val file = File(baseDir, "previous.json")
         if (pack == null) {

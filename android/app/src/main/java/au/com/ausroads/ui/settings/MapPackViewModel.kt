@@ -11,6 +11,7 @@ import au.com.ausroads.offline.download.state.ManifestFetchResult
 import au.com.ausroads.offline.pack.PackManifest
 import dagger.hilt.android.lifecycle.HiltViewModel
 import dagger.hilt.android.qualifiers.ApplicationContext
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
@@ -104,6 +105,53 @@ class MapPackViewModel @Inject constructor(
         mapPackManager.cancelDownload()
     }
 
+    /** Opens the uninstall confirmation dialog for the installed pack. */
+    fun onUninstallClick() {
+        _uiState.update { it.copy(showUninstallConfirm = true, info = null) }
+    }
+
+    fun onUninstallDismissed() {
+        _uiState.update { it.copy(showUninstallConfirm = false) }
+    }
+
+    /** Confirmed uninstall: delete the pack; outcome lands on info (success) or error (failure). */
+    @Suppress("TooGenericExceptionCaught") // storage deletion can fail in many ways; surface it
+    fun onUninstallConfirmed() {
+        _uiState.update { it.copy(showUninstallConfirm = false, isDeleting = true, error = null) }
+        viewModelScope.launch {
+            val result = try {
+                Result.success(mapPackManager.deleteInstalled())
+            } catch (e: CancellationException) {
+                throw e
+            } catch (e: Exception) {
+                Result.failure(e)
+            }
+            result.fold(
+                onSuccess = { deleted ->
+                    if (deleted) {
+                        _uiState.update {
+                            it.copy(isDeleting = false, info = context.getString(R.string.map_pack_uninstalled))
+                        }
+                    } else {
+                        // Nothing was deleted (e.g. raced with another removal) — a
+                        // failure, not a silent success.
+                        _uiState.update {
+                            it.copy(isDeleting = false, error = context.getString(R.string.map_pack_uninstall_failed))
+                        }
+                    }
+                },
+                onFailure = { e ->
+                    _uiState.update {
+                        it.copy(
+                            isDeleting = false,
+                            error = context.getString(R.string.download_failed_generic, e.message ?: ""),
+                        )
+                    }
+                },
+            )
+        }
+    }
+
     /** Map an internal failure reason to a user-facing message (no raw enum names). */
     private fun friendlyFailure(reason: ManifestFetchResult.FailureReason): String =
         context.getString(
@@ -124,6 +172,10 @@ data class MapPackUiState(
     val error: String? = null,
     /** Non-failure outcome message (e.g. "Already up to date"), rendered neutrally. */
     val info: String? = null,
+    /** Whether the uninstall-confirmation dialog is showing. */
+    val showUninstallConfirm: Boolean = false,
+    /** True while the installed pack is being deleted. */
+    val isDeleting: Boolean = false,
 )
 
 /** Args of the most recent download attempt, kept so a failed run can be retried verbatim. */

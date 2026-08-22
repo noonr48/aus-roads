@@ -18,6 +18,7 @@ import dagger.hilt.android.qualifiers.ApplicationContext
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.withContext
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
@@ -50,6 +51,15 @@ class MapPackManager @Inject constructor(
     private val _downloadError = MutableStateFlow<String?>(null)
     val downloadError: StateFlow<String?> = _downloadError.asStateFlow()
 
+    /**
+     * Pack versions deleted via [deleteInstalled] whose completion events must
+     * not resurrect state: a download worker finishing around an uninstall
+     * re-writes current.json and would otherwise re-appear as installed.
+     * Cleared per-version by [startDownload] (explicit re-install intent).
+     */
+    private val suppressedAfterDelete: MutableSet<String> =
+        java.util.concurrent.ConcurrentHashMap.newKeySet()
+
     init {
         scope.launch {
             evictionManager.reconcile()
@@ -81,7 +91,14 @@ class MapPackManager @Inject constructor(
                         WorkInfo.State.SUCCEEDED -> {
                             _inFlight.value = null
                             _downloadError.value = null
-                            _installed.value = packStateStore.readCurrent()
+                            val installedNow = packStateStore.readCurrent()
+                            if (installedNow != null && installedNow.version in suppressedAfterDelete) {
+                                // Racing worker completed after an uninstall; drop the
+                                // resurrected state instead of showing it as installed.
+                                packStateStore.clearCurrent()
+                            } else {
+                                _installed.value = installedNow
+                            }
                         }
                         WorkInfo.State.FAILED -> {
                             _inFlight.value = null
@@ -101,6 +118,8 @@ class MapPackManager @Inject constructor(
     fun startDownload(packUrl: String, packVersion: String, manifestJson: String? = null) {
         // Clear any stale failure from a previous attempt before re-enqueuing.
         _downloadError.value = null
+        // Explicit (re-)install intent lifts any uninstall suppression.
+        suppressedAfterDelete.remove(packVersion)
         val data = Data.Builder()
             .putString(MapPackDownloadWorker.KEY_PACK_URL, packUrl)
             .putString(MapPackDownloadWorker.KEY_PACK_VERSION, packVersion)
@@ -139,5 +158,25 @@ class MapPackManager @Inject constructor(
         val version = _installed.value?.version ?: return null
         if (version.isEmpty()) return null
         return packStateStore.packDir(version)
+    }
+
+    /**
+     * Deletes the installed pack's directory and clears its persisted state so it
+     * does not resurrect after restart; the [installed] flow reflects the removal
+     * immediately. Returns true when a pack directory was actually deleted.
+     */
+    suspend fun deleteInstalled(): Boolean {
+        val current = _installed.value ?: return false
+        // Kill any in-flight download first: a worker finishing after we cleared
+        // state would otherwise resurrect the pack via the SUCCEEDED observer.
+        cancelDownload()
+        suppressedAfterDelete.add(current.version)
+        val dir = packStateStore.packDir(current.version)
+        val deleted = withContext(Dispatchers.IO) { dir.exists() && dir.deleteRecursively() }
+        packStateStore.clearCurrent()
+        packStateStore.writePrevious(null)
+        _installed.value = null
+        packStateStore.cleanupIfEmpty()
+        return deleted
     }
 }

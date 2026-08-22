@@ -104,4 +104,25 @@ class PackStateStoreTest {
         )
         assertThat(progress.percent).isNull()
     }
+
+    @Test
+    fun `clearCurrent removes the state so an uninstalled pack cannot resurrect`() = runTest {
+        val pack = InstalledPack(
+            version = "2026-08-22",
+            regionCode = "AU-SA",
+            installedAt = Instant.parse("2026-08-22T00:00:00Z"),
+            totalSizeBytes = 1L,
+            tilesPath = "tiles.pmtiles",
+            searchPath = null,
+            routingPath = null,
+            manifestSha256 = "a".repeat(64),
+        )
+        store.writeCurrent(pack)
+        assertThat(store.readCurrent()).isNotNull()
+
+        store.clearCurrent()
+
+        assertThat(store.readCurrent()).isNull()
+    }
+
 }

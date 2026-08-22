@@ -168,6 +168,11 @@
     <string name="download_failed_generic">Download failed: %s</string>
     <string name="settings_map_pack_download_unavailable">Map-pack downloads are available in the standard build.</string>
     <string name="map_pack_retry">Retry</string>
+    <string name="settings_map_pack_uninstall">Uninstall map pack</string>
+    <string name="map_pack_uninstall_title">Uninstall map pack?</string>
+    <string name="map_pack_uninstall_message">This deletes the downloaded map pack and its routing data from this device. You can download it again later.</string>
+    <string name="map_pack_uninstalled">Map pack uninstalled</string>
+    <string name="map_pack_uninstall_failed">Couldn\'t uninstall the map pack. Try again.</string>
     <string name="nearby_distance_hint_adelaide">Showing distances from Adelaide CBD — device location unavailable</string>
     <string name="nearby_lookup_error">Couldn\'t look up nearby places. Tap to retry.</string>
 
