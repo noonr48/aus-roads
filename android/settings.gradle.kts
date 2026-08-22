@@ -65,6 +65,7 @@ include(":navigation:tts")
 
 // :data:* — persistence layer (Room + DataStore). v0.1.1: pins, settings, installed packs.
 include(":data:pins")
+include(":data:reports")
 include(":data:settings")
 include(":data:pack")
 include(":data:routes")

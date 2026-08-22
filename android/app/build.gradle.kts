@@ -167,6 +167,7 @@ dependencies {
     implementation(project(":navigation:tts"))
     implementation(project(":ui:designsystem"))
     implementation(project(":data:pins"))
+    implementation(project(":data:reports"))
     implementation(project(":data:settings"))
     implementation(project(":data:pack"))
     implementation(project(":data:routes"))
