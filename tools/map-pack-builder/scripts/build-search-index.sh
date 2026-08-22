@@ -165,6 +165,27 @@ if [[ "$SPEED_COUNT" -eq 0 ]]; then
 fi
 
 # ---------------------------------------------------------------------------
+# 5b. Speed-camera table (for camera-awareness features)
+# ---------------------------------------------------------------------------
+#
+# Extract fixed speed cameras from the *same* PBF into the *same* search.db as
+# the `road_cameras` table (ships inside search.db — manifest unchanged). Two
+# OSM sources are mined by osm-to-cameras.py: highway=speed_camera nodes and
+# type=enforcement + enforcement=maxspeed relations (device member = camera
+# node, 'from' member gives the enforced way's name/position, relation carries
+# the enforced maxspeed). Missing tags degrade gracefully to NULL.
+#
+# Unlike road_speed, ZERO rows is NOT fatal here — speed cameras are sparse
+# and a small test clip may legitimately contain none.
+
+log "extracting speed cameras into road_cameras..."
+
+python3 "$HERE/osm-to-cameras.py" "$PBF" "$DB"
+
+CAMERA_COUNT=$("$SQLITE3" "$DB" "SELECT COUNT(*) FROM road_cameras;")
+log "road_cameras: $CAMERA_COUNT rows"
+
+# ---------------------------------------------------------------------------
 # 6. Compute SHA-256 + file size for the manifest
 # ---------------------------------------------------------------------------
 

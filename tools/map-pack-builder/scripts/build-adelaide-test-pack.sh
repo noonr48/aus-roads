@@ -80,7 +80,15 @@ log "OSM extract Last-Modified: $OSM_EXTRACT_DATE"
 # ---------------------------------------------------------------------------
 
 PLANETILER_VERSION="0.8.4"
-EXPECTED_SHA="9d3c3af7f2e1f9d7b3f7a5b4f5d2c8e9b1a2c3d4e5f6789a0b1c2d3e4f567890"  # placeholder; verified at runtime
+# Integrity pin for the Planetiler JAR (sha256 of planetiler.jar from the
+# official v${PLANETILER_VERSION} GitHub release page:
+#   https://github.com/onthegomap/planetiler/releases/tag/v${PLANETILER_VERSION}
+# ). Deliberately NOT hardcoded here: a guessable/stale constant would defeat
+# the point of the check. Export it before building:
+#   export PLANETILER_JAR_SHA256=$(curl -fsSL \
+#     https://github.com/onthegomap/planetiler/releases/download/v${PLANETILER_VERSION}/planetiler.jar.sha256)
+# (cross-check the value against the release page before trusting it).
+EXPECTED_SHA="${PLANETILER_JAR_SHA256:-}"
 
 if [[ ! -s "$PLANETILER_JAR" ]]; then
     log "fetching planetiler v${PLANETILER_VERSION}.jar..."
@@ -88,6 +96,26 @@ if [[ ! -s "$PLANETILER_JAR" ]]; then
         "https://github.com/onthegomap/planetiler/releases/download/v${PLANETILER_VERSION}/planetiler.jar"
     log "downloaded $(du -h "$PLANETILER_JAR" | cut -f1)"
 fi
+
+# Verify the JAR (freshly downloaded OR reused from cache — the cache itself
+# could be corrupted or swapped) before handing it to java.
+if [[ ! "$EXPECTED_SHA" =~ ^[0-9a-fA-F]{64}$ ]]; then
+    err "Planetiler JAR SHA-256 pin unset or malformed.
+  Set it before building:
+    export PLANETILER_JAR_SHA256=<64-hex sha256 of planetiler.jar v${PLANETILER_VERSION}>
+  Take the value from the official release page:
+    https://github.com/onthegomap/planetiler/releases/tag/v${PLANETILER_VERSION}
+  Refusing to build with an unverified builder JAR."
+    exit 1
+fi
+ACTUAL_SHA="$(sha256sum "$PLANETILER_JAR" | cut -d' ' -f1)"
+if [[ "${EXPECTED_SHA,,}" != "$ACTUAL_SHA" ]]; then
+    rm -f "$PLANETILER_JAR"
+    err "Planetiler JAR sha256 MISMATCH: expected ${EXPECTED_SHA}, got ${ACTUAL_SHA}.
+  Deleted the bad JAR (${PLANETILER_JAR}). Fix PLANETILER_JAR_SHA256 and rerun."
+    exit 1
+fi
+log "planetiler jar sha256 OK: ${ACTUAL_SHA}"
 
 # ---------------------------------------------------------------------------
 # 2b. Integrity-guard the water-polygons .prj
@@ -255,11 +283,32 @@ log "wrote $DIST/manifest.json"
 # ---------------------------------------------------------------------------
 # 6. Build Valhalla routing tiles (reuse an existing whole-SA graph if present so
 #    a tiles-only rebuild doesn't pay the ~10 min Docker Valhalla build).
+#
+#    The graph lives at TWO paths depending on how it was produced:
+#      - valhalla-build/valhalla_tiles.tar   (manual/CI staging area)
+#      - dist/routing/valhalla_tiles.tar     (written by build-valhalla-tiles.sh,
+#                                             and what package-pack.sh ships)
+#    Check BOTH and prefer the freshest by mtime, so a previous build's output
+#    in dist/routing/ is reused instead of triggering a redundant rebuild.
 # ---------------------------------------------------------------------------
 
-VALHALLA_TAR="$ROOT/valhalla-build/valhalla_tiles.tar"
-if [[ -s "$VALHALLA_TAR" ]]; then
-    log "step 6: reusing existing Valhalla tar ($(du -h "$VALHALLA_TAR" | cut -f1)) -- delete it to force a rebuild"
+VALHALLA_TAR_A="$ROOT/valhalla-build/valhalla_tiles.tar"
+VALHALLA_TAR_B="$DIST/routing/valhalla_tiles.tar"
+VALHALLA_TAR=""
+if [[ -s "$VALHALLA_TAR_A" && -s "$VALHALLA_TAR_B" ]]; then
+    if [[ "$VALHALLA_TAR_A" -nt "$VALHALLA_TAR_B" ]]; then
+        VALHALLA_TAR="$VALHALLA_TAR_A"
+    else
+        VALHALLA_TAR="$VALHALLA_TAR_B"
+    fi
+elif [[ -s "$VALHALLA_TAR_A" ]]; then
+    VALHALLA_TAR="$VALHALLA_TAR_A"
+elif [[ -s "$VALHALLA_TAR_B" ]]; then
+    VALHALLA_TAR="$VALHALLA_TAR_B"
+fi
+
+if [[ -n "$VALHALLA_TAR" ]]; then
+    log "step 6: reusing existing Valhalla tar ($VALHALLA_TAR, $(du -h "$VALHALLA_TAR" | cut -f1)) -- delete it to force a rebuild"
 else
     log "step 6: building Valhalla routing tiles..."
     bash "$HERE/build-valhalla-tiles.sh"

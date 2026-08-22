@@ -14,7 +14,10 @@ downloads. The pack bundles vector tiles, a SQLite FTS5 search index, and
 `scripts/build-adelaide-test-pack.sh` is the region-parameterized entry point:
 it runs Planetiler for the tiles, reuses (or builds) the Valhalla routing graph,
 and calls `package-pack.sh` to assemble + self-verify the zip. The bbox is set
-by `PACK_BBOX`:
+by `PACK_BBOX`. NOTE: the script now REQUIRES `PLANETILER_JAR_SHA256` in the
+environment — a 64-hex-char sha256 of the Planetiler 0.8.4 JAR, taken from the
+official Planetiler v0.8.4 release page — and aborts with instructions if it is
+unset or malformed; a mismatch deletes the cached JAR and fails loudly.
 
 - **Default — Adelaide test clip (~31 MB):**
   ```bash
@@ -44,7 +47,8 @@ into `cache/`, then produces `dist/adelaide-test-tiles.mbtiles` (~19 MB).
 ## Outputs
 
 - `dist/adelaide-test-tiles.mbtiles` — 19 MB vector tile pyramid z0–z14,
-  covering Adelaide metro (138.55°E–138.70°E, 35.00°S–34.85°S).
+  covering Adelaide metro (138.4°E–139.0°E, 35.2°S–34.6°S — the script's
+  default `PACK_BBOX`; the script governs, not older doc snippets).
 - `dist/style.json` — MapLibre style spec with the OpenMapTiles layers we care
   about: roads, water, parks, buildings, road names, suburb names, POIs.
 - `dist/manifest.json` — manifest matching

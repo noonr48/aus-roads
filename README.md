@@ -2,7 +2,7 @@
 
 A privacy-focused offline map of South Australia with official live roadworks, incidents, closures, events, outback road warnings, and offline routing. **Play Store ready** — see `docs/notes/release-signing.md` and `docs/notes/play-store-listing.md`.
 
-**v1.0** — 19 commits, 25+ modules, 650+ tests. Final commit `1d2d4cf`.
+**v1.0** — 25+ modules, 650+ tests. Public mirror of the internal line; current HEAD `84c0704`.
 
 ## Features
 
@@ -27,12 +27,12 @@ A privacy-focused offline map of South Australia with official live roadworks, i
 
 ```
 /home/benbi/Apps/aus-roads/
-  android/         # Gradle root — the Android app (24 modules)
+  android/         # Gradle root — the Android app (28 Gradle modules incl. :app)
     app/             # :app — main application module
-    core/            # :core:model, :core:common — pure-Kotlin domain types
-    data/            # :data:pins, :data:settings, :data:pack, :data:routes — Room & DataStore
-    feature/         # :feature:search, :feature:traffic, :feature:navigation
-    traffic/         # :traffic:provider-api, :traffic:provider-sa, :traffic:provider-dit,
+    core/            # :core:model, :core:common, :core:geo — pure-Kotlin domain types
+    data/            # :data:pins, :data:reports, :data:settings, :data:pack, :data:routes, :data:tracks — Room & DataStore
+    feature/         # :feature:search, :feature:traffic, :feature:navigation, :feature:trip
+    traffic/         # :traffic:provider-api, :traffic:provider-sa, :traffic:provider-stub,
                      # :traffic:provider-nsw, :traffic:provider-vic, :traffic:provider-sa-outback,
                      # :traffic:congestion-api
     routing/         # :routing:engine-api, :routing:engine-valhalla — offline routing
