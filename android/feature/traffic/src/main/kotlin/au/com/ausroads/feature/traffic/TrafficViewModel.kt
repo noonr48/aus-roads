@@ -40,8 +40,9 @@ class TrafficViewModel @Inject constructor(
     private var pollingJob: Job? = null
 
     /**
-     * Start polling for traffic updates. Called from the UI when the map screen
-     * is visible. Stops automatically when the ViewModel is cleared.
+     * Start polling for traffic updates. Called from the UI when the traffic
+     * overlay becomes visible; a loop that is already running is kept as-is so
+     * repeated calls cannot stack duplicate pollers.
      */
     fun startPolling() {
         if (pollingJob?.isActive == true) return
@@ -51,6 +52,16 @@ class TrafficViewModel @Inject constructor(
                 delay(POLL_INTERVAL)
             }
         }
+    }
+
+    /**
+     * Stop polling for traffic updates. Idempotent and safe to call before any
+     * [startPolling]; cancels the scheduled loop so no further polls fire. An
+     * already in-flight single fetch may still complete, but nothing reschedules.
+     */
+    fun stopPolling() {
+        pollingJob?.cancel()
+        pollingJob = null
     }
 
     fun fetchTraffic() {

@@ -167,6 +167,9 @@
     <string name="download_unavailable_in_build">Map-pack downloads aren\'t available in this build.</string>
     <string name="download_failed_generic">Download failed: %s</string>
     <string name="settings_map_pack_download_unavailable">Map-pack downloads are available in the standard build.</string>
+    <string name="map_pack_retry">Retry</string>
+    <string name="nearby_distance_hint_adelaide">Showing distances from Adelaide CBD — device location unavailable</string>
+    <string name="nearby_lookup_error">Couldn\'t look up nearby places. Tap to retry.</string>
 
     <!-- Map coverage banner -->
     <string name="map_demo_pack_banner">Demo map · Adelaide area only</string>

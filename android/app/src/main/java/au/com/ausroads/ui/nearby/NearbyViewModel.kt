@@ -51,13 +51,25 @@ data class EmergencyInfo(
     val police: NearbyResult?,
 )
 
-/** Immutable UI state for the Nearby screen. */
+/**
+ * Immutable UI state for the Nearby screen.
+ *
+ * [reference] lives in state (not just on the ViewModel property) because the
+ * reference can move at runtime — when a live device fix arrives — and the UI
+ * must recompose around it. [usingDeviceLocation] distinguishes a device-fix
+ * reference from the Adelaide CBD fallback so the screen can show the
+ * "distances are from Adelaide" hint honestly. [emergencyLookupFailed]
+ * distinguishes "no emergency POIs found" from "the lookup itself failed".
+ */
 data class NearbyUiState(
     val categories: List<PoiCategory> = PoiCategory.entries.toList(),
     val selected: PoiCategory? = null,
+    val reference: GeoPoint = NearbyViewModel.ADELAIDE_CBD,
+    val usingDeviceLocation: Boolean = false,
     val results: List<NearbyResult> = emptyList(),
     val isLoading: Boolean = false,
     val emergency: EmergencyInfo? = null,
+    val emergencyLookupFailed: Boolean = false,
 )
 
 @HiltViewModel
@@ -72,9 +84,9 @@ class NearbyViewModel @Inject constructor(
      */
     internal var workDispatcher: CoroutineDispatcher = Dispatchers.Default
 
-    /** Current reference point. Defaults to the Adelaide CBD. */
-    var reference: GeoPoint = ADELAIDE_CBD
-        private set
+    /** Current reference point. Defaults to the Adelaide CBD until a fix lands. */
+    val reference: GeoPoint
+        get() = _uiState.value.reference
 
     private val _uiState = MutableStateFlow(NearbyUiState())
     val uiState: StateFlow<NearbyUiState> = _uiState.asStateFlow()
@@ -93,17 +105,48 @@ class NearbyViewModel @Inject constructor(
     }
 
     /**
-     * Move the reference point. Re-loads the emergency summary for the new
-     * location and clears any category results (the previous list is no longer
-     * relative to the new reference).
+     * Move the reference point manually. Re-loads the emergency summary for the
+     * new location and clears any category results (the previous list is no
+     * longer relative to the new reference).
      */
     fun setReference(latitude: Double, longitude: Double) {
-        // Invalidate any in-flight category query so a late result can't
-        // repopulate the list against the old reference after we've cleared it.
+        applyReference(
+            point = GeoPoint(longitude = longitude, latitude = latitude),
+            fromDevice = false,
+        )
+    }
+
+    /**
+     * Adopt a live device fix as the reference point. The first fix always
+     * applies; subsequent streaming fixes are ignored until the device has moved
+     * more than [MIN_MOVE_METERS], so a continuous location stream cannot keep
+     * clearing freshly loaded results every couple of seconds.
+     */
+    fun onDeviceLocation(latitude: Double, longitude: Double) {
+        val candidate = GeoPoint(longitude = longitude, latitude = latitude)
+        val movedMeters = MeasureGeometry.haversineMeters(reference, candidate)
+        if (_uiState.value.usingDeviceLocation && movedMeters < MIN_MOVE_METERS) return
+        applyReference(point = candidate, fromDevice = true)
+    }
+
+    /**
+     * Shared reference-move path: invalidate any in-flight category query so a
+     * late result can't repopulate the list against the old reference after
+     * we've cleared it, then reload the emergency summary for the new point.
+     */
+    private fun applyReference(point: GeoPoint, fromDevice: Boolean) {
         selectionToken++
-        reference = GeoPoint(longitude = longitude, latitude = latitude)
         _uiState.update {
-            it.copy(selected = null, results = emptyList(), emergency = null)
+            it.copy(
+                reference = point,
+                usingDeviceLocation = fromDevice,
+                selected = null,
+                results = emptyList(),
+                emergency = null,
+                // A fresh lookup starts; the previous failure (if any) no longer
+                // describes the in-flight attempt.
+                emergencyLookupFailed = false,
+            )
         }
         loadEmergency()
     }
@@ -162,11 +205,18 @@ class NearbyViewModel @Inject constructor(
     /**
      * Load the single nearest hospital and the single nearest police station
      * relative to the current reference and publish them as [EmergencyInfo].
-     * Best-effort: failures simply leave the affected slot null.
+     * Best-effort: failures leave the affected slot null AND raise
+     * [NearbyUiState.emergencyLookupFailed] so the UI can show an honest error
+     * instead of silently looking like "nothing found".
      */
     @Suppress("TooGenericExceptionCaught") // best-effort emergency lookup; never crash the screen
     fun loadEmergency() {
+        // Snapshot (not increment): applyReference has already bumped
+        // selectionToken before calling us, so any older in-flight lookup holds
+        // a stale token and cannot publish over this one's result.
+        val token = selectionToken
         viewModelScope.launch {
+            var lookupFailed = false
             val info = try {
                 val hospital = nearestSingle(PoiCategory.HOSPITAL)
                 val police = nearestSingle(PoiCategory.POLICE)
@@ -175,9 +225,14 @@ class NearbyViewModel @Inject constructor(
                 throw e
             } catch (e: Exception) {
                 Log.w(TAG, "Nearby emergency lookup failed", e)
+                lookupFailed = true
                 EmergencyInfo(hospital = null, police = null)
             }
-            _uiState.update { it.copy(emergency = info) }
+            // A newer selection/reference move supersedes this lookup; never let
+            // a slow older result overwrite fresher emergency state.
+            if (token == selectionToken) {
+                _uiState.update { it.copy(emergency = info, emergencyLookupFailed = lookupFailed) }
+            }
         }
     }
 
@@ -209,6 +264,9 @@ class NearbyViewModel @Inject constructor(
 
         /** Max POIs fetched per category selection. */
         const val RESULT_LIMIT: Int = 25
+
+        /** Minimum movement (metres) before a new device fix re-centers Nearby. */
+        const val MIN_MOVE_METERS: Double = 25.0
 
         private const val TAG = "NearbyViewModel"
     }

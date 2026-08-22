@@ -15,6 +15,7 @@ import au.com.ausroads.offline.pack.SearchComponent
 import au.com.ausroads.offline.pack.TileComponent
 import com.google.common.truth.Truth.assertThat
 import io.mockk.coEvery
+import io.mockk.coVerify
 import io.mockk.every
 import io.mockk.just
 import io.mockk.mockk
@@ -123,7 +124,56 @@ class MapPackViewModelTest {
         viewModel.onDownloadClick()
 
         verify(exactly = 0) { mapPackManager.startDownload(any(), any(), any()) }
-        assertThat(viewModel.uiState.value.error).isNotNull()
+        // "Already up to date" is an outcome, not a failure: info channel, no error.
+        assertThat(viewModel.uiState.value.info).isNotNull()
+        assertThat(viewModel.uiState.value.error).isNull()
+    }
+
+    @Test
+    fun `onRetryClick re-enqueues last failed download without refetching manifest`() = runTest {
+        val manifest = buildManifest()
+        coEvery { mapPackManager.fetchLatestManifest() } returns
+            ManifestFetchResult.Fresh(manifest, "{}")
+        viewModel.onDownloadClick()
+        // Simulate a failed worker run after enqueue.
+        downloadErrorFlow.value = "Verification failed: tiles"
+
+        viewModel.onRetryClick()
+
+        coVerify(exactly = 1) { mapPackManager.fetchLatestManifest() }
+        verify(exactly = 2) {
+            mapPackManager.startDownload("https://cdn.aus-roads.example/pack.zip", "2026-06-01", any())
+        }
+    }
+
+    @Test
+    fun `onRetryClick without prior attempt falls back to manifest check`() = runTest {
+        val manifest = buildManifest()
+        coEvery { mapPackManager.fetchLatestManifest() } returns
+            ManifestFetchResult.Fresh(manifest, "{}")
+
+        viewModel.onRetryClick()
+
+        coVerify(exactly = 1) { mapPackManager.fetchLatestManifest() }
+        verify(exactly = 1) { mapPackManager.startDownload(any(), "2026-06-01", any()) }
+    }
+
+    @Test
+    fun `new check clears previous info message`() = runTest {
+        installedFlow.value = installedPack(version = "2026-06-01")
+        coEvery { mapPackManager.fetchLatestManifest() } returns
+            ManifestFetchResult.Unchanged(buildManifest(), "{}")
+        viewModel.onDownloadClick()
+        assertThat(viewModel.uiState.value.info).isNotNull()
+
+        // A newer pack becomes available and the user checks again.
+        installedFlow.value = installedPack(version = "2026-05-31")
+        coEvery { mapPackManager.fetchLatestManifest() } returns
+            ManifestFetchResult.Fresh(buildManifest(), "{}")
+        viewModel.onDownloadClick()
+
+        assertThat(viewModel.uiState.value.info).isNull()
+        verify { mapPackManager.startDownload(any(), "2026-06-01", any()) }
     }
 
     private fun installedPack(version: String) = InstalledPack(

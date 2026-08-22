@@ -36,9 +36,11 @@ class MapPackViewModel @Inject constructor(
     private val _uiState = MutableStateFlow(MapPackUiState())
     val uiState: StateFlow<MapPackUiState> = _uiState.asStateFlow()
 
+    private var lastAttempt: DownloadAttempt? = null
+
     fun onDownloadClick() {
         viewModelScope.launch {
-            _uiState.update { it.copy(isChecking = true, error = null) }
+            _uiState.update { it.copy(isChecking = true, error = null, info = null) }
             when (val result = mapPackManager.fetchLatestManifest()) {
                 // Fresh (200) and Unchanged (304) both carry the latest manifest. The
                 // download decision compares its version to the INSTALLED pack, not the
@@ -54,6 +56,21 @@ class MapPackViewModel @Inject constructor(
     }
 
     /**
+     * Retry the most recent failed download, reusing MapPackManager retry
+     * semantics (startDownload clears the stale worker failure before
+     * re-enqueuing). Falls back to the full manifest check when no download
+     * was previously attempted.
+     */
+    fun onRetryClick() {
+        val attempt = lastAttempt
+        if (attempt == null) {
+            onDownloadClick()
+        } else {
+            mapPackManager.startDownload(attempt.packUrl, attempt.packVersion, attempt.manifestJson)
+        }
+    }
+
+    /**
      * Start a download only if the latest manifest's pack version differs from the
      * installed pack. Comparing against the installed version (not the manifest's
      * freshness) means a download that failed after the manifest was cached can be
@@ -64,14 +81,22 @@ class MapPackViewModel @Inject constructor(
             _uiState.update {
                 it.copy(
                     isChecking = false,
-                    error = context.getString(R.string.download_already_up_to_date),
+                    // "Already up to date" is an outcome, not a failure — surface it
+                    // on the info channel so the UI doesn't paint it red.
+                    info = context.getString(R.string.download_already_up_to_date),
                 )
             }
             return
         }
         // Flat asset name — GitHub Release assets can't contain slashes (<base>/pack.zip);
         // rawJson is threaded so the worker verifies components against their hashes.
-        mapPackManager.startDownload("$baseUrl/pack.zip", manifest.packVersion, rawJson)
+        val attempt = DownloadAttempt(
+            packUrl = "$baseUrl/pack.zip",
+            packVersion = manifest.packVersion,
+            manifestJson = rawJson,
+        )
+        lastAttempt = attempt
+        mapPackManager.startDownload(attempt.packUrl, attempt.packVersion, attempt.manifestJson)
         _uiState.update { it.copy(isChecking = false) }
     }
 
@@ -97,4 +122,13 @@ class MapPackViewModel @Inject constructor(
 data class MapPackUiState(
     val isChecking: Boolean = false,
     val error: String? = null,
+    /** Non-failure outcome message (e.g. "Already up to date"), rendered neutrally. */
+    val info: String? = null,
+)
+
+/** Args of the most recent download attempt, kept so a failed run can be retried verbatim. */
+private data class DownloadAttempt(
+    val packUrl: String,
+    val packVersion: String,
+    val manifestJson: String?,
 )

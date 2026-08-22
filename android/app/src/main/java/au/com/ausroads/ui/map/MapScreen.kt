@@ -77,6 +77,7 @@ import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalContext
 import androidx.core.content.ContextCompat
+import androidx.hilt.navigation.compose.hiltViewModel
 import androidx.lifecycle.compose.LocalLifecycleOwner
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.text.font.FontWeight
@@ -89,6 +90,7 @@ import androidx.lifecycle.LifecycleEventObserver
 import au.com.ausroads.R
 import au.com.ausroads.core.model.GeoPoint
 import au.com.ausroads.data.pins.Pin
+import au.com.ausroads.feature.navigation.NavigationState
 import au.com.ausroads.routing.engine.RouteOptions
 import au.com.ausroads.traffic.provider.LiveTrafficEvent
 import kotlinx.coroutines.launch
@@ -182,7 +184,16 @@ fun MapScreen(
     modifier: Modifier = Modifier,
 ) {
     val context = LocalContext.current
-    val hasPack = remember(context) { MapPackAvailability.hasAnyPack(context) }
+
+    // Reactive pack state: observing MapPackManager.installed means a pack
+    // downloaded in Settings shows up here without an activity recreation.
+    // The bundled asset set never changes within a process, so a one-shot
+    // check remains correct for that half of the availability decision.
+    val packStateViewModel: MapPackStateViewModel = hiltViewModel()
+    val installedPack by packStateViewModel.installed.collectAsState()
+    val hasBundledPack = remember(context) { MapPackAvailability.hasBundledPack(context) }
+    val hasPack = installedPack != null || hasBundledPack
+    val usingBundledTiles = installedPack == null && hasBundledPack
 
     if (!hasPack) {
         NoMapPackPlaceholder(
@@ -206,6 +217,7 @@ fun MapScreen(
         routeViewModel = routeViewModel,
         routeAvoidOptions = routeAvoidOptions,
         onRouteAvoidOptionsChange = onRouteAvoidOptionsChange,
+        usingBundledTiles = usingBundledTiles,
         modifier = modifier,
     )
 }
@@ -219,6 +231,7 @@ private fun MapScreenContent(
     onDeletePin: (Pin) -> Unit,
     reverseGeocode: suspend (Double, Double) -> String?,
     showAttribution: Boolean,
+    usingBundledTiles: Boolean,
     searchViewModel: au.com.ausroads.feature.search.SearchViewModel?,
     trafficViewModel: au.com.ausroads.feature.traffic.TrafficViewModel?,
     trafficEnabled: Boolean,
@@ -234,10 +247,15 @@ private fun MapScreenContent(
     val scope = rememberCoroutineScope()
     val snackbarHostState = remember { SnackbarHostState() }
 
-    // Start traffic polling when enabled
-    LaunchedEffect(trafficEnabled) {
-        if (trafficEnabled && trafficViewModel != null) {
-            trafficViewModel.startPolling()
+    // Poll for traffic updates while the overlay is enabled; stop when toggled
+    // off or when this composition leaves, so neither battery nor data are
+    // spent polling for an overlay nobody is looking at.
+    DisposableEffect(trafficEnabled, trafficViewModel) {
+        if (trafficEnabled) {
+            trafficViewModel?.startPolling()
+        }
+        onDispose {
+            trafficViewModel?.stopPolling()
         }
     }
 
@@ -310,6 +328,39 @@ private fun MapScreenContent(
         }
     }
 
+    // Persist the started route to history at navigation START so process death
+    // mid-navigation cannot lose it. Exact-started-route semantics: the record
+    // comes from the route the user actually started (RouteViewModel still holds
+    // it until Stop, and mid-session recalculations never overwrite it), saved
+    // once per navigation session and retained through Stop.
+    LaunchedEffect(navigationViewModel, routeViewModel, routeHistoryViewModel) {
+        val navVm = navigationViewModel ?: return@LaunchedEffect
+        val historyVm = routeHistoryViewModel ?: return@LaunchedEffect
+        var savedForSession = false
+        navVm.state.collect { navState ->
+            when {
+                navState is NavigationState.Idle -> savedForSession = false
+                navState is NavigationState.Navigating && !savedForSession -> {
+                    val result =
+                        (routeViewModel?.routeState?.value as? RouteUiState.Active)?.result
+                    if (result != null && result.geometry.isNotEmpty()) {
+                        savedForSession = true
+                        val origin = result.geometry.first()
+                        val dest = result.geometry.last()
+                        historyVm.saveRoute(
+                            originLat = origin.latitude,
+                            originLon = origin.longitude,
+                            destLat = dest.latitude,
+                            destLon = dest.longitude,
+                            distanceMeters = result.distanceMeters,
+                            durationSeconds = result.durationSeconds,
+                        )
+                    }
+                }
+            }
+        }
+    }
+
     // Start directions to a coordinate, preferring the live GPS fix as the origin
     // and falling back to the current map centre when no fix is available.
     val startDirectionsTo: (Double, Double) -> Unit = startDirections@{ lat, lon ->
@@ -360,7 +411,7 @@ private fun MapScreenContent(
         // Coverage banner: when rendering the bundled Adelaide demo tiles (no full
         // pack downloaded), make the limited extent explicit instead of silent.
         // Sits just below the search bar so it doesn't collide with it.
-        if (remember(context) { MapPackAvailability.isUsingBundledFallback(context) }) {
+        if (usingBundledTiles) {
             DemoCoverageBanner(
                 modifier = Modifier
                     .align(Alignment.TopCenter)
@@ -440,20 +491,8 @@ private fun MapScreenContent(
             au.com.ausroads.feature.navigation.NavigationOverlay(
                 viewModel = navigationViewModel,
                 onStopNavigation = {
-                    // Save completed route to history when navigation ends
-                    val route = activeRoute
-                    if (route != null && routeHistoryViewModel != null && route.geometry.isNotEmpty()) {
-                        val origin = route.geometry.first()
-                        val dest = route.geometry.last()
-                        routeHistoryViewModel.saveRoute(
-                            originLat = origin.latitude,
-                            originLon = origin.longitude,
-                            destLat = dest.latitude,
-                            destLon = dest.longitude,
-                            distanceMeters = route.distanceMeters,
-                            durationSeconds = route.durationSeconds,
-                        )
-                    }
+                    // History was persisted at navigation START; stopping must not
+                    // duplicate the record — just tear down the active route.
                     routeViewModel?.clearRoute()
                 },
                 modifier = Modifier.align(Alignment.BottomCenter),

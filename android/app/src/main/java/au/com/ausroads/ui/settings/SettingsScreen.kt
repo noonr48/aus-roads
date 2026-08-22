@@ -178,11 +178,14 @@ fun SettingsScreen(
                     installedPack = installedPack,
                     downloadProgress = downloadProgress,
                     isChecking = packUiState.isChecking,
-                    error = packUiState.error ?: workerError?.let {
+                    error = packUiState.error,
+                    workerError = workerError?.let {
                         stringResource(R.string.download_failed_generic, it)
                     },
+                    info = packUiState.info,
                     onDownloadClick = mapPackViewModel::onDownloadClick,
                     onCancelClick = mapPackViewModel::onCancelClick,
+                    onRetryClick = mapPackViewModel::onRetryClick,
                 )
             } else {
                 // The offline (privacy flagship) flavor cannot reach the network;
@@ -292,8 +295,11 @@ private fun MapPackSection(
     downloadProgress: DownloadProgress?,
     isChecking: Boolean,
     error: String?,
+    workerError: String?,
+    info: String?,
     onDownloadClick: () -> Unit,
     onCancelClick: () -> Unit,
+    onRetryClick: () -> Unit,
     modifier: Modifier = Modifier,
 ) {
     Column(
@@ -363,6 +369,25 @@ private fun MapPackSection(
                 text = error,
                 style = MaterialTheme.typography.bodySmall,
                 color = MaterialTheme.colorScheme.error,
+            )
+        }
+        // Failure of the most recent WORKER run (verify/extract/etc.) — surfaced with an
+        // explicit retry that re-enqueues the same download via MapPackManager.
+        if (workerError != null) {
+            Text(
+                text = workerError,
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.error,
+            )
+            Button(onClick = onRetryClick, enabled = !isChecking) {
+                Text(stringResource(R.string.map_pack_retry))
+            }
+        }
+        if (info != null) {
+            Text(
+                text = info,
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
             )
         }
     }

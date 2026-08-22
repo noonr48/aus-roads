@@ -8,8 +8,10 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.test.StandardTestDispatcher
+import kotlinx.coroutines.test.advanceTimeBy
 import kotlinx.coroutines.test.advanceUntilIdle
 import kotlinx.coroutines.test.resetMain
+import kotlinx.coroutines.test.runCurrent
 import kotlinx.coroutines.test.runTest
 import kotlinx.coroutines.test.setMain
 import org.junit.After
@@ -138,6 +140,64 @@ class NearbyViewModelTest {
     }
 
     @Test
+    fun `onDeviceLocation adopts the first fix and flags device reference`() = runTest(testDispatcher) {
+        repository.byCategory[PoiCategory.FUEL] = listOf(fuel("Servo", lonOffset = 0.05))
+        viewModel.selectCategory(PoiCategory.FUEL)
+        advanceUntilIdle()
+        assertThat(viewModel.uiState.value.results).isNotEmpty()
+
+        viewModel.onDeviceLocation(latitude = -34.95, longitude = 138.65)
+        advanceUntilIdle()
+
+        assertThat(viewModel.reference.latitude).isEqualTo(-34.95)
+        assertThat(viewModel.reference.longitude).isEqualTo(138.65)
+        assertThat(viewModel.uiState.value.usingDeviceLocation).isTrue()
+        // A reference move clears stale category results, same as setReference.
+        assertThat(viewModel.uiState.value.results).isEmpty()
+    }
+
+    @Test
+    fun `streaming device fixes within the move threshold are ignored`() = runTest(testDispatcher) {
+        viewModel.onDeviceLocation(latitude = -34.95, longitude = 138.65)
+        advanceUntilIdle()
+        repository.byCategory[PoiCategory.FUEL] = listOf(fuel("Servo", lonOffset = 0.05))
+        viewModel.selectCategory(PoiCategory.FUEL)
+        advanceUntilIdle()
+        val loaded = viewModel.uiState.value
+        assertThat(loaded.results).isNotEmpty()
+
+        // ~6 m nudge: far below MIN_MOVE_METERS — must not re-center or clear.
+        viewModel.onDeviceLocation(latitude = -34.94996, longitude = 138.65004)
+        advanceUntilIdle()
+
+        assertThat(viewModel.reference.latitude).isEqualTo(-34.95)
+        assertThat(viewModel.reference.longitude).isEqualTo(138.65)
+        assertThat(viewModel.uiState.value.results.map { it.result.name })
+            .containsExactly("Servo")
+
+        // But a real move (> MIN_MOVE_METERS) still applies and clears results.
+        viewModel.onDeviceLocation(latitude = -34.97, longitude = 138.70)
+        advanceUntilIdle()
+
+        assertThat(viewModel.reference.latitude).isEqualTo(-34.97)
+        assertThat(viewModel.uiState.value.results).isEmpty()
+    }
+
+    @Test
+    fun `manual setReference overrides a device reference and clears its flag`() =
+        runTest(testDispatcher) {
+            viewModel.onDeviceLocation(latitude = -34.95, longitude = 138.65)
+            advanceUntilIdle()
+            assertThat(viewModel.uiState.value.usingDeviceLocation).isTrue()
+
+            viewModel.setReference(latitude = -33.8688, longitude = 151.2093)
+            advanceUntilIdle()
+
+            assertThat(viewModel.uiState.value.usingDeviceLocation).isFalse()
+            assertThat(viewModel.reference.latitude).isEqualTo(-33.8688)
+        }
+
+    @Test
     fun `a slow earlier selection cannot overwrite a newer selection's results`() =
         runTest(testDispatcher) {
             repository.byCategory[PoiCategory.FUEL] = listOf(fuel("Servo", lonOffset = 0.05))
@@ -156,6 +216,71 @@ class NearbyViewModelTest {
             assertThat(state.results.map { it.result.name }).containsExactly("Hospital")
             assertThat(state.isLoading).isFalse()
         }
+
+    @Test
+    fun `emergency lookup failure surfaces an explicit error flag`() = runTest(testDispatcher) {
+        repository.throwOnNearest = true
+        viewModel = NearbyViewModel(repository).apply { workDispatcher = testDispatcher }
+        advanceUntilIdle()
+
+        val state = viewModel.uiState.value
+        assertThat(state.emergencyLookupFailed).isTrue()
+        assertThat(state.emergency?.hospital).isNull()
+        assertThat(state.emergency?.police).isNull()
+    }
+
+    @Test
+    fun `slow older emergency lookup cannot overwrite newer reference state`() = runTest(testDispatcher) {
+        repository.byCategory[PoiCategory.HOSPITAL] =
+            listOf(fuel("Royal Adelaide Hospital", lonOffset = 0.02))
+        repository.byCategory[PoiCategory.POLICE] =
+            listOf(fuel("Adelaide Police Station", lonOffset = 0.03))
+        // The init-launched emergency lookup's hospital query is slow.
+        repository.delayByCategory[PoiCategory.HOSPITAL] = 1_000L
+
+        viewModel = NearbyViewModel(repository).apply { workDispatcher = testDispatcher }
+        runCurrent() // lookup #1 suspended inside its slow hospital delay
+
+        // A reference move supersedes it: token bumps, lookup #2 launches with
+        // a fast hospital query that finds nothing at the new reference.
+        repository.byCategory[PoiCategory.HOSPITAL] = emptyList()
+        repository.delayByCategory[PoiCategory.HOSPITAL] = 10L
+        viewModel.setReference(latitude = -33.8688, longitude = 151.2093)
+
+        advanceTimeBy(100)
+        assertThat(viewModel.uiState.value.emergency?.hospital).isNull()
+
+        advanceTimeBy(1_000)
+        // The stale lookup must not publish over the fresher emergency state.
+        assertThat(viewModel.uiState.value.emergency?.hospital).isNull()
+    }
+
+    @Test
+    fun `successful emergency load leaves no failure flag`() = runTest(testDispatcher) {
+        repository.byCategory[PoiCategory.HOSPITAL] =
+            listOf(fuel("Royal Adelaide Hospital", lonOffset = 0.02))
+        repository.byCategory[PoiCategory.POLICE] =
+            listOf(fuel("Adelaide Police Station", lonOffset = 0.03))
+        viewModel = NearbyViewModel(repository).apply { workDispatcher = testDispatcher }
+        advanceUntilIdle()
+
+        val state = viewModel.uiState.value
+        assertThat(state.emergencyLookupFailed).isFalse()
+        assertThat(state.emergency?.hospital?.result?.name)
+            .isEqualTo("Royal Adelaide Hospital")
+    }
+
+    @Test
+    fun `empty emergency results without failure keep the flag down`() = runTest(testDispatcher) {
+        // No POIs seeded at all: none-found, not a lookup error.
+        viewModel = NearbyViewModel(repository).apply { workDispatcher = testDispatcher }
+        advanceUntilIdle()
+
+        val state = viewModel.uiState.value
+        assertThat(state.emergencyLookupFailed).isFalse()
+        assertThat(state.emergency?.hospital).isNull()
+        assertThat(state.emergency?.police).isNull()
+    }
 
     /** A POI east of the Adelaide CBD by [lonOffset] degrees. */
     private fun fuel(name: String, lonOffset: Double): SearchResult =

@@ -8,11 +8,13 @@
  * category. Sharing / "view on map" is done with a geo: intent fired through
  * the LocalContext, so the screen needs nothing wired in from above.
  */
-@file:Suppress("LongMethod", "TooManyFunctions")
+@file:Suppress("LongMethod", "TooManyFunctions", "CyclomaticComplexMethod")
 
 package au.com.ausroads.ui.nearby
 
+import android.Manifest
 import android.content.Intent
+import android.content.pm.PackageManager
 import android.net.Uri
 import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.Arrangement
@@ -54,8 +56,10 @@ import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.material3.TopAppBar
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.remember
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.vector.ImageVector
@@ -63,11 +67,13 @@ import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
+import androidx.core.content.ContextCompat
 import androidx.hilt.navigation.compose.hiltViewModel
 import au.com.ausroads.R
 import au.com.ausroads.core.geo.CoordinateFormatter
 import au.com.ausroads.core.model.GeoPoint
 import au.com.ausroads.offline.search.PoiCategory
+import au.com.ausroads.ui.map.rememberUserLocation
 import java.util.Locale
 
 /** Friendly label string-resource for each [PoiCategory]. */
@@ -112,6 +118,24 @@ fun NearbyScreen(
     val state by viewModel.uiState.collectAsState()
     val context = LocalContext.current
 
+    // Mirror the map screen's location wiring: observe the live fused fix when
+    // ACCESS_FINE_LOCATION is already granted and feed it to the ViewModel as
+    // the distance reference. The offline flavor never grants this permission
+    // (its manifest strips it by design), so Nearby keeps the Adelaide CBD
+    // fallback there — no crash, no fake precision, just the honest hint below.
+    // Observe-only on purpose: Nearby never prompts for the permission itself.
+    val hasLocationPermission = remember(context) {
+        ContextCompat.checkSelfPermission(
+            context,
+            Manifest.permission.ACCESS_FINE_LOCATION,
+        ) == PackageManager.PERMISSION_GRANTED
+    }
+    val userLocation = rememberUserLocation(hasLocationPermission)
+    LaunchedEffect(userLocation.value?.latitude, userLocation.value?.longitude) {
+        val fix = userLocation.value ?: return@LaunchedEffect
+        viewModel.onDeviceLocation(latitude = fix.latitude, longitude = fix.longitude)
+    }
+
     val shareAt: (Double, Double, String?) -> Unit = { lat, lon, label ->
         shareLocation(context, lat, lon, label)
     }
@@ -131,12 +155,25 @@ fun NearbyScreen(
             verticalArrangement = Arrangement.spacedBy(16.dp),
         ) {
             CoordinatesCard(
-                reference = viewModel.reference,
-                onShare = { shareAt(viewModel.reference.latitude, viewModel.reference.longitude, null) },
+                reference = state.reference,
+                onShare = {
+                    shareAt(state.reference.latitude, state.reference.longitude, null)
+                },
             )
+
+            if (!state.usingDeviceLocation) {
+                Text(
+                    text = stringResource(R.string.nearby_distance_hint_adelaide),
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    modifier = Modifier.fillMaxWidth(),
+                )
+            }
 
             EmergencySection(
                 emergency = state.emergency,
+                lookupFailed = state.emergencyLookupFailed,
+                onRetry = { viewModel.loadEmergency() },
                 onShare = shareAt,
             )
 
@@ -217,14 +254,48 @@ private fun CoordinateRow(label: String, value: String) {
     }
 }
 
+/**
+ * Emergency summary card. When both lookups failed outright (repository error,
+ * not merely "none found"), shows an honest tappable error instead of silently
+ * hiding the section — a safety-relevant distinction when travelling.
+ */
 @Composable
 private fun EmergencySection(
     emergency: EmergencyInfo?,
+    lookupFailed: Boolean,
+    onRetry: () -> Unit,
     onShare: (Double, Double, String?) -> Unit,
 ) {
     val hospital = emergency?.hospital
     val police = emergency?.police
-    if (hospital == null && police == null) return
+    if (hospital == null && police == null) {
+        if (lookupFailed) {
+            Card(
+                modifier = Modifier.fillMaxWidth(),
+                colors = CardDefaults.cardColors(
+                    containerColor = MaterialTheme.colorScheme.errorContainer,
+                ),
+                onClick = onRetry,
+            ) {
+                Column(
+                    modifier = Modifier.fillMaxWidth().padding(16.dp),
+                    verticalArrangement = Arrangement.spacedBy(8.dp),
+                ) {
+                    Text(
+                        text = stringResource(R.string.nearby_emergency_title),
+                        style = MaterialTheme.typography.titleMedium,
+                        color = MaterialTheme.colorScheme.onErrorContainer,
+                    )
+                    Text(
+                        text = stringResource(R.string.nearby_lookup_error),
+                        style = MaterialTheme.typography.bodyMedium,
+                        color = MaterialTheme.colorScheme.onErrorContainer,
+                    )
+                }
+            }
+        }
+        return
+    }
 
     Card(
         modifier = Modifier.fillMaxWidth(),

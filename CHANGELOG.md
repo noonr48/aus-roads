@@ -1,5 +1,14 @@
 # Changelog
 
+## Unreleased
+- Nearby: distances now use the live device location when available (25 m movement hysteresis); offline flavor degrades honestly to Adelaide CBD with an explicit hint; emergency lookup failures are distinct from empty results with tap-to-retry; stale in-flight emergency lookups can no longer overwrite fresher state (token guard).
+- Traffic overlay: polling now stops on toggle-off and on leaving composition (battery/data fix); duplicate poller guard; stop-before-start safe.
+- Map: map-pack install state is reactive — a pack downloaded in Settings appears immediately without recreating the activity; route history is persisted at navigation start so process death mid-navigation keeps the started route.
+- Settings/download UX: success info channel separated from errors ("Already up to date" is no longer an error), retry button after worker failures.
+- New `:data:reports` module: local persistence foundation for community reports (shop / accident / mobile speed camera / hazard) per ADR-0004 v0.5+ privacy posture — sync/networking deliberately deferred.
+- Map-pack pipeline: Valhalla tile reuse now checks both output paths (freshest wins); Planetiler JAR pinned via mandatory `PLANETILER_JAR_SHA256` verification (aborts on unset/malformed/mismatch); new `osm-to-cameras.py` extracts OSM `highway=speed_camera` nodes + `enforcement=maxspeed` relations into a `road_cameras` table (fixed-camera foundation).
+- Docs drift fixed: README status/commit/module tree aligned to reality; tools README documents the SHA-pin requirement and script-governed bbox.
+
 ## v1.0 (2026-06-03)
 - Play Store release preparation
 - Accessibility fixes (contentDescription, 48dp touch targets)
