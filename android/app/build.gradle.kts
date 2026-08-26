@@ -36,8 +36,9 @@ android {
     namespace = "au.com.ausroads"
     defaultConfig {
         applicationId = "au.com.ausroads"
-        versionCode = 1
-        versionName = "0.1.0"
+        // Shipped release v1.0 (CHANGELOG.md "## v1.0"); code 2 supersedes the v0.1.0 build.
+        versionCode = 2
+        versionName = "1.0"
         // Default runner uses the real AusRoadsApp (@HiltAndroidApp), so
         // instrumented tests exercise the production Hilt graph + HiltWorkerFactory.
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"

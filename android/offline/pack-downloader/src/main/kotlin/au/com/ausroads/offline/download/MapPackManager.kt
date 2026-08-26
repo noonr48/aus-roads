@@ -15,6 +15,7 @@ import au.com.ausroads.offline.download.state.InstalledPack
 import au.com.ausroads.offline.download.state.ManifestFetchResult
 import au.com.ausroads.offline.download.state.PackStateStore
 import dagger.hilt.android.qualifiers.ApplicationContext
+import kotlinx.coroutines.CoroutineExceptionHandler
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
@@ -24,6 +25,8 @@ import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.mapNotNull
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.sync.Mutex
+import kotlinx.coroutines.sync.withLock
 import javax.inject.Inject
 import javax.inject.Singleton
 
@@ -33,8 +36,28 @@ class MapPackManager @Inject constructor(
     private val manifestFetcher: ManifestFetcher,
     private val packStateStore: PackStateStore,
     private val evictionManager: EvictionManager,
+    /**
+     * Serializes every persisted-map-pack-state writer under one lock:
+     * [deleteInstalled]'s tombstone (check-and-add to [suppressedAfterDelete]
+     * plus state reset), the SUCCEEDED observer's restore ([adoptRestoredPack]),
+     * and eviction's current.json/previous.json swaps all run inside it, so none
+     * can interleave into another's read-check-publish sequence and resurrect
+     * deleted-version state. Provided by DI as the singleton instance shared
+     * with [EvictionManager] — internal for exactly that wiring.
+     */
+    internal val stateMutex: Mutex,
 ) {
-    private val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
+    // A crashed observer coroutine must not take the process down: log it and
+    // keep the last published _installed value instead.
+    private val scope = CoroutineScope(
+        SupervisorJob() + Dispatchers.IO + CoroutineExceptionHandler { _, throwable ->
+            android.util.Log.e(
+                "MapPackManager",
+                "map-pack state coroutine failed; keeping last published installed state",
+                throwable,
+            )
+        },
+    )
     private val workManager = WorkManager.getInstance(context)
 
     private val _installed = MutableStateFlow<InstalledPack?>(null)
@@ -91,14 +114,7 @@ class MapPackManager @Inject constructor(
                         WorkInfo.State.SUCCEEDED -> {
                             _inFlight.value = null
                             _downloadError.value = null
-                            val installedNow = packStateStore.readCurrent()
-                            if (installedNow != null && installedNow.version in suppressedAfterDelete) {
-                                // Racing worker completed after an uninstall; drop the
-                                // resurrected state instead of showing it as installed.
-                                packStateStore.clearCurrent()
-                            } else {
-                                _installed.value = installedNow
-                            }
+                            adoptRestoredPack()
                         }
                         WorkInfo.State.FAILED -> {
                             _inFlight.value = null
@@ -154,6 +170,30 @@ class MapPackManager @Inject constructor(
         _downloadError.value = null
     }
 
+    /**
+     * The download-success observer's tail: atomically adopt-or-suppress whatever
+     * landed in current.json. Internal so unit tests can drive the exact observer
+     * behaviour against [stateMutex]-guarded deletes.
+     */
+    internal suspend fun adoptRestoredPack() {
+        stateMutex.withLock {
+            val installedNow = packStateStore.readCurrent()
+            if (installedNow != null && installedNow.version in suppressedAfterDelete) {
+                // Racing worker completed after an uninstall and rewrote persisted
+                // state; drop the resurrected DIRECTORY too, not just current.json,
+                // so the suppressed version cannot lie orphaned on disk.
+                packStateStore.clearCurrent()
+                withContext(Dispatchers.IO) {
+                    packStateStore.packDir(installedNow.version).deleteRecursively()
+                    packStateStore.cleanupIfEmpty()
+                }
+                _installed.value = null
+            } else {
+                _installed.value = installedNow
+            }
+        }
+    }
+
     fun currentPackDir(): java.io.File? {
         val version = _installed.value?.version ?: return null
         if (version.isEmpty()) return null
@@ -170,13 +210,19 @@ class MapPackManager @Inject constructor(
         // Kill any in-flight download first: a worker finishing after we cleared
         // state would otherwise resurrect the pack via the SUCCEEDED observer.
         cancelDownload()
-        suppressedAfterDelete.add(current.version)
         val dir = packStateStore.packDir(current.version)
-        val deleted = withContext(Dispatchers.IO) { dir.exists() && dir.deleteRecursively() }
-        packStateStore.clearCurrent()
-        packStateStore.writePrevious(null)
-        _installed.value = null
-        packStateStore.cleanupIfEmpty()
+        val deleted = stateMutex.withLock {
+            // Tombstone add + reset are atomic against adoptRestoredPack(): an
+            // observer that already read stale disk still lands AFTER this block
+            // and re-checks the set under the same lock before publishing.
+            suppressedAfterDelete.add(current.version)
+            val didDelete = withContext(Dispatchers.IO) { dir.exists() && dir.deleteRecursively() }
+            packStateStore.clearCurrent()
+            packStateStore.writePrevious(null)
+            _installed.value = null
+            packStateStore.cleanupIfEmpty()
+            didDelete
+        }
         return deleted
     }
 }

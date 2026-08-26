@@ -84,6 +84,22 @@ class PackStateStore(
     }
 
     private inline fun <reified T> writeJsonFile(file: File, value: T) {
-        file.writeText(json.encodeToString(value))
+        // Atomic replace: write a UNIQUE temp sibling then rename onto the target,
+        // so an interrupted/crashed write leaves the PREVIOUS valid JSON intact
+        // (rename overwrites atomically within one directory). The suffix is
+        // unique per call: a crashed writer's leftover "<name>.tmp.<nanotime>"
+        // must never collide with — or seal — a later writer's swap slot (a
+        // fixed-name sibling previously let one poisoned temp break every future
+        // write of that file).
+        val tempFile = File(file.parentFile, file.name + ".tmp." + System.nanoTime())
+        try {
+            file.parentFile?.mkdirs()
+            tempFile.writeText(json.encodeToString(value))
+            check(tempFile.renameTo(file)) { "Failed to atomically replace $file" }
+        } finally {
+            // No scratch state survives any failure path (success = already moved);
+            // only THIS writer's own temp is ever removed.
+            if (tempFile.exists()) tempFile.delete()
+        }
     }
 }

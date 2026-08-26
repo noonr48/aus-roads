@@ -71,7 +71,27 @@ sealed class AusRoadsDestination(
     )
 
     companion object {
-        val bottomBarItems: List<AusRoadsDestination> = listOf(Map, Nearby, Pins, Settings)
+        // lazy is REQUIRED: eager initialization here runs during the sealed
+        // class's <clinit>, touching subclass data objects before super-class
+        // initialization completes (JVM super-first rule) -> INSTANCE-null NPE.
+        // Plain-JVM unit tests (ResolveStartDestinationTest) exposed this;
+        // deferring to first access is safe under any load order.
+        val bottomBarItems: List<AusRoadsDestination> by lazy { listOf(Map, Nearby, Pins, Settings) }
+
+        /**
+         * Every route with a registered composable(...) destination in
+         * [AusRoadsNavHost]: the tab destinations plus legitimate
+         * full-screen routes (About) excluded from [bottomBarItems].
+         */
+        val graphRoutes: Set<String> by lazy {
+            setOf(
+                Map.route,
+                Nearby.route,
+                Pins.route,
+                Settings.route,
+                About.route,
+            )
+        }
     }
 }
 
@@ -159,3 +179,21 @@ fun AusRoadsNavHost(
         }
     }
 }
+
+/**
+ * Maps a live back-stack observation onto a safe NavHost start destination.
+ *
+ * Both form factors derive the start destination from the CURRENT back-stack
+ * entry so the app restores wherever the user was. An unregistered route
+ * string passed straight through crashes NavHost construction, while baking
+ * a real-but-non-tab route (About, absent from the bars) in as the graph root
+ * silently changes saveState/back-stack semantics when bar taps pop back up
+ * to findStartDestination(). Null or unregistered observations therefore
+ * degrade to the Map root.
+ */
+fun resolveStartDestination(observedRoute: String?): String =
+    if (observedRoute != null && observedRoute in AusRoadsDestination.graphRoutes) {
+        observedRoute
+    } else {
+        AusRoadsDestination.Map.route
+    }

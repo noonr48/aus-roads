@@ -17,6 +17,7 @@ import dagger.hilt.android.qualifiers.ApplicationContext
 import dagger.hilt.components.SingletonComponent
 import io.ktor.client.HttpClient
 import io.ktor.http.Url
+import kotlinx.coroutines.sync.Mutex
 import kotlinx.datetime.Clock
 import javax.inject.Named
 import javax.inject.Singleton
@@ -82,9 +83,20 @@ object DownloadModule {
         evictionManager: EvictionManager,
     ): PackInstaller = PackInstaller(packVerifier, packStateStore, evictionManager, Clock.System)
 
+    /**
+     * Single shared instance for every persisted-map-pack-state writer:
+     * MapPackManager's delete/tombstone + restore-adopt critical sections AND
+     * EvictionManager's current.json/previous.json swaps must serialize against
+     * each other or a racing worker completion can resurrect deleted state.
+     */
+    @Provides
+    @Singleton
+    fun providePackStateMutex(): Mutex = Mutex()
+
     @Provides
     @Singleton
     fun provideEvictionManager(
         packStateStore: PackStateStore,
-    ): EvictionManager = EvictionManager(packStateStore)
+        stateMutex: Mutex,
+    ): EvictionManager = EvictionManager(packStateStore, stateMutex)
 }

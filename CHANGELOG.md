@@ -1,6 +1,10 @@
 # Changelog
 
 ## Unreleased
+- Pack lifecycle hardening: verification-failed/generic-failed downloads always delete poisoned partial artifacts (no endless resume loops); worker failures surface non-blank errors including OOM-class throwables (cancellation still passes through); delete/restore suppression tombstone and EvictionManager install/reconcile writes are serialized under one shared mutex; pack-state JSON writes are atomic (unique temp + rename); foreground-service start denial flows into the surfaced error instead of dying silently.
+- Release-readiness truth fixes: offline flavor additionally strips ACCESS_BACKGROUND_LOCATION / ACCESS_MEDIA_LOCATION (CI audit extended and made fail-closed); privacy About text is truthful per flavor (strict override for offline); version metadata aligned to v1.0 (versionCode 2).
+- Navigation shell guard: startDestination resolves through registered-route validation (unknown roots degrade to Map instead of crashing NavHost construction) with unit coverage incl. route-set drift invariants; destination registry initialization deferred (`by lazy`) fixing a cyclic <clinit> NPE plain-JVM tests exposed.
+- Camera pipeline: speed-camera extraction emits one row per device node (node maxspeed preferred over relation limit; multi-relation untagged devices deduped) with regression tests.
 - Nearby: distances now use the live device location when available (25 m movement hysteresis); offline flavor degrades honestly to Adelaide CBD with an explicit hint; emergency lookup failures are distinct from empty results with tap-to-retry; stale in-flight emergency lookups can no longer overwrite fresher state (token guard).
 - Traffic overlay: polling now stops on toggle-off and on leaving composition (battery/data fix); duplicate poller guard; stop-before-start safe.
 - Map: map-pack install state is reactive — a pack downloaded in Settings appears immediately without recreating the activity; route history is persisted at navigation start so process death mid-navigation keeps the started route.

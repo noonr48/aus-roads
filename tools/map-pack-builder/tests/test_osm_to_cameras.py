@@ -5,10 +5,12 @@ Loads the extractor by file path (the script filename contains hyphens, so it
 is not importable as a module) and exercises it end-to-end against a synthetic
 OSM XML fixture containing:
 
-  - a highway=speed_camera node WITH a maxspeed tag,
+  - a highway=speed_camera node WITH a maxspeed tag (node 1001, which is ALSO
+    relation 4001's device member — must yield exactly ONE merged row, the
+    node's explicit limit winning over the relation's conflicting one),
   - a highway=speed_camera node WITHOUT one (graceful degradation),
   - an unrelated amenity node (must be ignored),
-  - an enforcement=maxspeed relation (from=way, device=node, to=way),
+  - an enforcement=maxspeed relation (from=way, device=node 1001, to=way),
   - an enforcement=maxspeed relation WITHOUT a device member and WITHOUT a
     maxspeed tag (falls back to the enforced way's centroid, NULL limit),
   - an unrelated relation (must be ignored).
@@ -88,6 +90,45 @@ FIXTURE_OSM = """<?xml version="1.0" encoding="UTF-8"?>
 </osm>
 """
 
+# Multi-relation dedupe fixture: UNTAGGED device node 5001 is the device member
+# of TWO enforcement=maxspeed relations (different enforced roads and limits).
+# Exactly one row must be emitted for it (first relation's values win).
+MULTI_RELATION_FIXTURE_OSM = """<?xml version="1.0" encoding="UTF-8"?>
+<osm version="0.6" generator="test-fixture">
+  <node id="5001" version="1" lat="-34.97000" lon="138.62000"/>
+  <node id="6001" version="1" lat="-34.98000" lon="138.62000"/>
+  <node id="6002" version="1" lat="-34.99000" lon="138.62000"/>
+  <way id="7001" version="1">
+    <nd ref="6001"/>
+    <nd ref="6002"/>
+    <tag k="highway" v="primary"/>
+    <tag k="name" v="South Eastern Freeway"/>
+  </way>
+  <way id="7002" version="1">
+    <nd ref="6001"/>
+    <nd ref="6002"/>
+    <tag k="highway" v="secondary"/>
+    <tag k="name" v="Crafers Road"/>
+  </way>
+  <relation id="8001" version="1">
+    <member type="way" ref="7001" role="from"/>
+    <member type="node" ref="5001" role="device"/>
+    <member type="way" ref="7001" role="to"/>
+    <tag k="type" v="enforcement"/>
+    <tag k="enforcement" v="maxspeed"/>
+    <tag k="maxspeed" v="60"/>
+  </relation>
+  <relation id="8002" version="1">
+    <member type="way" ref="7002" role="from"/>
+    <member type="node" ref="5001" role="device"/>
+    <member type="way" ref="7002" role="to"/>
+    <tag k="type" v="enforcement"/>
+    <tag k="enforcement" v="maxspeed"/>
+    <tag k="maxspeed" v="80"/>
+  </relation>
+</osm>
+"""
+
 
 class ParseMaxspeedTest(unittest.TestCase):
     """Direct tests of the shared maxspeed parsing rules."""
@@ -159,21 +200,30 @@ class CameraExtractionTest(unittest.TestCase):
         )
 
     def test_row_count(self):
-        # 2 standalone camera nodes + 2 enforcement relations (4003 is not
-        # enforcement=maxspeed and must be ignored).
-        self.assertEqual(len(self._all_rows()), 4)
+        # Node 1002 + relation 4002's centroid fallback + ONE merged row for
+        # node 1001 (speed_camera node AND relation 4001's device member —
+        # counted once; it was previously duplicated with limits 80 and 60).
+        # Relation 4003 is not enforcement=maxspeed and must be ignored.
+        self.assertEqual(len(self._all_rows()), 3)
 
-    def test_standalone_node_with_limit(self):
-        self.assertIn((-34.9285, 138.6005, "fixed", 80, None), self._all_rows())
+    def test_camera_node_also_device_member_is_deduped(self):
+        # Node 1001 is BOTH a highway=speed_camera node (maxspeed=80) and
+        # relation 4001's device member (maxspeed=60): it must produce exactly
+        # ONE row at the device-node position (not the from-way centroid) with
+        # the explicit device-node limit winning — 80, never a conflicting
+        # 80/60 pair for the same node.
+        matches = [
+            row
+            for row in self._all_rows()
+            if row[0] == -34.9285 and row[1] == 138.6005
+        ]
+        self.assertEqual(
+            matches, [(-34.9285, 138.6005, "fixed", 80, "Main South Road")]
+        )
+        self.assertFalse(any(row[3] == 60 for row in self._all_rows()))
 
     def test_standalone_node_without_limit_is_graceful(self):
         self.assertIn((-34.93, 138.61, "fixed", None, None), self._all_rows())
-
-    def test_relation_device_position_and_limit(self):
-        # Relation 4001's device member is node 1001 (lat -34.92850, lon
-        # 138.60050) — the device position must win over the from-way centroid
-        # (-34.955): this is what discriminates the preference.
-        self.assertIn((-34.9285, 138.6005, "fixed", 60, "Main South Road"), self._all_rows())
 
     def test_relation_falls_back_to_way_centroid_without_device(self):
         # Relation 4002 has no device member and no maxspeed: position comes
@@ -189,19 +239,20 @@ class CameraExtractionTest(unittest.TestCase):
         # Relation 4003 (enforcement=traffic_signals) must contribute nothing:
         # assert the full expected row count here so this test stands alone
         # instead of leaning on the sibling row-count test.
-        self.assertEqual(len(self._all_rows()), 4)
+        self.assertEqual(len(self._all_rows()), 3)
 
     def test_handler_counters(self):
         h = self.handler
         self.assertEqual(h.matched_node_cameras, 2)
         self.assertEqual(h.matched_relations, 2)  # 4003 filtered out
-        self.assertEqual(h.emitted, 4)
+        self.assertEqual(h.emitted, 3)  # node 1001 counted once, not twice
+        self.assertEqual(h.deduped_device_nodes, 1)
         self.assertEqual(h.skipped_no_location, 0)
 
     def test_idempotent_rerun(self):
         # A second standalone run must not duplicate rows (DELETE + INSERT).
         osm_to_cameras.extract_osm_to_db(str(self.fixture), str(self.db))
-        self.assertEqual(len(self._all_rows()), 4)
+        self.assertEqual(len(self._all_rows()), 3)
 
     def test_index_created(self):
         idx = self.conn.execute(
@@ -218,6 +269,43 @@ class FixtureSanityTest(unittest.TestCase):
         for marker in ('id="1001"', 'id="4001"', 'id="4002"', 'id="4003"',
                        'k="highway" v="speed_camera"', 'k="enforcement" v="maxspeed"'):
             self.assertIn(marker, text)
+
+
+class MultiRelationDedupeTest(unittest.TestCase):
+    """Two enforcement relations sharing an UNtagged device member -> single row."""
+
+    @classmethod
+    def setUpClass(cls):
+        cls.tmp = tempfile.TemporaryDirectory(prefix="osm-cameras-multi-rel-")
+        base = Path(cls.tmp.name)
+        cls.fixture = base / "fixture.osm"
+        cls.fixture.write_text(MULTI_RELATION_FIXTURE_OSM, encoding="utf-8")
+        cls.db = base / "search.db"
+        cls.handler = osm_to_cameras.extract_osm_to_db(str(cls.fixture), str(cls.db))
+        cls.conn = sqlite3.connect(str(cls.db))
+
+    @classmethod
+    def tearDownClass(cls):
+        cls.conn.close()
+        cls.tmp.cleanup()
+
+    def test_two_relations_sharing_untagged_device_emit_single_row(self):
+        # Node 5001 carries no highway=speed_camera tag yet is the device member
+        # of relations 8001 (maxspeed=60) and 8002 (maxspeed=80): without the
+        # multi-relation dedupe this emitted TWO rows for one physical camera.
+        # First emitting relation wins on limit and road name.
+        rows = self.conn.execute(
+            "SELECT lat, lon, kind, maxspeed_kmh, way_name FROM road_cameras"
+        ).fetchall()
+        self.assertEqual(
+            rows,
+            [(-34.97, 138.62, "fixed", 60, "South Eastern Freeway")],
+        )
+        h = self.handler
+        self.assertEqual(h.matched_relations, 2)
+        self.assertEqual(h.emitted, 1)
+        self.assertEqual(h.deduped_relation_devices, 1)
+        self.assertEqual(h.deduped_device_nodes, 0)
 
 
 if __name__ == "__main__":

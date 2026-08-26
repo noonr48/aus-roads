@@ -13,9 +13,19 @@ Two OSM sources are mined (mirrors the wiki model of enforcement relations):
      a fallback position), the member with role `device` is the camera node
      (preferred position), and the relation carries the enforced `maxspeed`.
 
-One row is emitted per camera found, with the enforced limit kept NULL when
-the source carries no parseable maxspeed (missing tags handled gracefully —
-a camera without a known limit is still worth showing on the map).
+The two sources are DEDUPLICATED per camera node: a `highway=speed_camera`
+node that is ALSO an enforcement relation's `device` member yields ONE row,
+not two independently-parsed rows (limit precedence: the device node's own
+parseable `maxspeed` tag wins; otherwise the relation's enforced limit is
+used). One row is emitted per camera, with the enforced limit kept NULL when
+neither source carries a parseable maxspeed (missing tags handled
+gracefully — a camera without a known limit is still worth showing on the
+map).
+
+Untagged device nodes claimed by SEVERAL enforcement relations are also
+deduplicated at emission time, keyed by the device node's OSM id: one physical
+device yields exactly one row regardless of how many relations reference it
+(the first emitting relation's parsed limit and enforced-road name win).
 
 Table contract:
 
@@ -174,6 +184,24 @@ class CameraExtractor(osmium.SimpleHandler):
         # versions even with locations=True — reading it live made the device
         # position silently degrade to the way centroid.
         self.device_coords = {}
+        # Dedupe state: device-node id -> (lat, lon, node_speed, node_name) for
+        # highway=speed_camera nodes that are ALSO some relation's device
+        # member. Without this they were emitted twice with independently
+        # parsed limits (node tag vs relation maxspeed). Buffered rather than
+        # emitted because relations stream after nodes; finalize() merges each
+        # into exactly one row per node id.
+        self.deferred_camera_devices = {}
+        # Device-node id -> (rel_speed, rel_way_name), recorded by every
+        # enforcement=maxspeed relation claiming that node as its device.
+        self.device_relation_context = {}
+        # Device-node ids ALREADY emitted directly by an earlier enforcement
+        # relation (the UNTAGGED-device path below; tagged highway=speed_camera
+        # devices never reach it — they take the deferred merge instead).
+        # Without this guard, N relations sharing one physical untagged camera
+        # emitted N rows for the same location.
+        self.emitted_relation_devices = set()
+        self.deduped_device_nodes = 0
+        self.deduped_relation_devices = 0
         self.matched_node_cameras = 0
         self.matched_relations = 0
         self.emitted = 0
@@ -187,12 +215,13 @@ class CameraExtractor(osmium.SimpleHandler):
         self.emitted += 1
 
     def _relation_parts(self, r):
-        """Return (speed, device_loc, from_names, from_centroids) for a relation."""
+        """Return (speed, device_ref, device_loc, names, centroids) for a relation."""
         speed_raw = r.tags.get("maxspeed")
         speed = parse_maxspeed(speed_raw)
         if speed_raw is not None and speed is None:
             self.skipped_unparseable_speed += 1
 
+        device_ref = None
         device_loc = (None, None)
         names = []
         centroids = []
@@ -201,6 +230,7 @@ class CameraExtractor(osmium.SimpleHandler):
                 coords = self.device_coords.get(member.ref)
                 if coords is not None:
                     device_loc = coords
+                    device_ref = member.ref
             elif member.type == "w" and member.role in ("from", "to"):
                 info = self.ways.get(member.ref)
                 if info is None:
@@ -210,7 +240,7 @@ class CameraExtractor(osmium.SimpleHandler):
                     names.append(name)
                 if clat is not None:
                     centroids.append((clat, clon))
-        return speed, device_loc, names, centroids
+        return speed, device_ref, device_loc, names, centroids
 
     # -- osmium callbacks ---------------------------------------------------
 
@@ -229,6 +259,17 @@ class CameraExtractor(osmium.SimpleHandler):
             self.skipped_no_location += 1
             return
         speed = parse_maxspeed(n.tags.get("maxspeed"))
+        if n.id in self.referenced_device_ids:
+            # Also an enforcement relation's device member: defer so this node
+            # is emitted exactly ONCE (finalized below, together with the
+            # relation-derived fallback limit).
+            self.deferred_camera_devices[n.id] = (
+                loc.lat,
+                loc.lon,
+                speed,
+                n.tags.get("name") or None,
+            )
+            return
         self._emit(loc.lat, loc.lon, speed, n.tags.get("name") or None)
 
     def way(self, w):
@@ -242,7 +283,34 @@ class CameraExtractor(osmium.SimpleHandler):
         if not CameraWayCollector.is_enforcement_maxspeed(r.tags):
             return
         self.matched_relations += 1
-        speed, (dlat, dlon), names, centroids = self._relation_parts(r)
+        speed, device_ref, (dlat, dlon), names, centroids = self._relation_parts(r)
+
+        # Single-row guarantee: when this relation's device node is itself a
+        # tagged highway=speed_camera node, its row is assembled once in
+        # finalize(); record the relation-derived context and emit nothing here.
+        if device_ref is not None and device_ref in self.deferred_camera_devices:
+            rel_name = names[0] if names else None
+            prev = self.device_relation_context.get(device_ref)
+            if prev is None:
+                self.device_relation_context[device_ref] = (speed, rel_name)
+            else:
+                # First concrete values win; upgrade a NULL limit / missing
+                # name if a later relation sharing the device supplies one.
+                kept_speed, kept_name = prev
+                if kept_speed is None and speed is not None:
+                    kept_speed = speed
+                if kept_name is None and rel_name:
+                    kept_name = rel_name
+                self.device_relation_context[device_ref] = (kept_speed, kept_name)
+            return
+
+        # Multi-relation dedupe: several relations can claim the SAME untagged
+        # device node (one camera enforcing multiple road segments). Keyed by
+        # node id, an already-emitted device is never re-emitted by a later
+        # relation — first concrete values win.
+        if device_ref is not None and device_ref in self.emitted_relation_devices:
+            self.deduped_relation_devices += 1
+            return
 
         # Position: prefer the device node, fall back to the enforced way's centroid.
         lat, lon = dlat, dlon
@@ -254,6 +322,26 @@ class CameraExtractor(osmium.SimpleHandler):
 
         way_name = names[0] if names else None
         self._emit(lat, lon, speed, way_name)
+        if device_ref is not None:
+            self.emitted_relation_devices.add(device_ref)
+
+    def finalize(self):
+        """Emit ONE merged row per dual-source camera node (tagged + device member).
+
+        Limit precedence: the device node's own maxspeed tag wins when it
+        parses to a sane value; otherwise the relation's enforced maxspeed is
+        used. way_name follows the same spirit — the node's own name tag
+        first, falling back to the enforced way's name.
+        """
+        for node_id in sorted(self.deferred_camera_devices):
+            lat, lon, node_speed, node_name = self.deferred_camera_devices[node_id]
+            rel_speed, rel_name = self.device_relation_context.get(
+                node_id, (None, None)
+            )
+            speed = node_speed if node_speed is not None else rel_speed
+            way_name = node_name if node_name else rel_name
+            self._emit(lat, lon, speed, way_name)
+            self.deduped_device_nodes += 1
 
 
 def create_schema(conn):
@@ -288,6 +376,9 @@ def extract_osm_to_db(pbf_path, db_path):
     # positions are buffered explicitly in node() because relation-member
     # locations are version-dependent (see device_coords comment above).
     handler.apply_file(pbf_path, locations=True, idx="flex_mem")
+    # Merge the buffered dual-source camera nodes (tag + relation device) into
+    # their single final rows before anything hits the database.
+    handler.finalize()
 
     conn = sqlite3.connect(db_path)
     try:
@@ -309,7 +400,11 @@ def extract_osm_to_db(pbf_path, db_path):
         f"road_cameras: matched {handler.matched_node_cameras} speed_camera nodes "
         f"and {handler.matched_relations} enforcement=maxspeed relations, "
         f"emitted {handler.emitted} rows "
-        f"(skipped {handler.skipped_no_location} without any usable position; "
+        f"({handler.deduped_device_nodes} dual-source camera/device nodes "
+        f"merged to one row; "
+        f"{handler.deduped_relation_devices} re-claimed untagged device nodes "
+        f"kept single-row; "
+        f"skipped {handler.skipped_no_location} without any usable position; "
         f"{handler.skipped_unparseable_speed} unparseable limits kept as NULL).",
         file=sys.stderr,
     )

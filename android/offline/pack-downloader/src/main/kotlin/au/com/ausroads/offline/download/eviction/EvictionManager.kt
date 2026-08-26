@@ -3,21 +3,41 @@ package au.com.ausroads.offline.download.eviction
 import au.com.ausroads.offline.download.state.InstalledPack
 import au.com.ausroads.offline.download.state.PackStateStore
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.sync.Mutex
+import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withContext
 import java.io.File
 
-class EvictionManager(private val packStateStore: PackStateStore) {
+/**
+ * @param stateMutex defaults to this instance's own lock so standalone
+ *   constructions (unit tests) stay self-consistent. Production wiring injects
+ *   the MapPackManager-shared singleton mutex so eviction's current.json and
+ *   previous.json writes serialize against the delete/suppression protocol
+ *   instead of interleaving with it.
+ */
+class EvictionManager(
+    private val packStateStore: PackStateStore,
+    private val stateMutex: Mutex = Mutex(),
+) {
 
     /**
      * On new install: promote current → previous, write new current, delete stale dirs.
      */
     suspend fun onNewInstall(newPack: InstalledPack) = withContext(Dispatchers.IO) {
-        val current = packStateStore.readCurrent()
-        if (current != null) {
-            packStateStore.writePrevious(current)
+        // The persisted-state READ joins the shared suppression-protocol lock too:
+        // a tombstone (deleteInstalled) completing between an out-of-lock read
+        // and this section could resurrect a just-deleted version as
+        // previous.json. Stale-dir deletion stays outside the critical section.
+        var keepVersions: Set<String> = setOf(newPack.version)
+        stateMutex.withLock {
+            val current = packStateStore.readCurrent()
+            if (current != null) {
+                packStateStore.writePrevious(current)
+                keepVersions = keepVersions + current.version
+            }
+            packStateStore.writeCurrent(newPack)
         }
-        packStateStore.writeCurrent(newPack)
-        deleteStaleDirs(keepVersions = setOf(newPack.version, current?.version).filterNotNull().toSet())
+        deleteStaleDirs(keepVersions = keepVersions)
     }
 
     /**
@@ -37,20 +57,25 @@ class EvictionManager(private val packStateStore: PackStateStore) {
             val previousValid = previousDir != null && previousDir.exists() && previousDir.isDirectory
 
             if (previousValid) {
-                packStateStore.writeCurrent(previous!!)
-                packStateStore.writePrevious(null)
+                stateMutex.withLock {
+                    packStateStore.writeCurrent(previous!!)
+                    packStateStore.writePrevious(null)
+                }
                 deleteStaleDirs(keepVersions = setOf(previous.version))
             } else {
-                // Both invalid — clear state
-                packStateStore.writeCurrent(InstalledPack(
-                    version = "",
-                    regionCode = "",
-                    installedAt = kotlinx.datetime.Clock.System.now(),
-                    totalSizeBytes = 0,
-                    tilesPath = "",
-                    manifestSha256 = "",
-                ))
-                packStateStore.writePrevious(null)
+                // Both invalid — clear state (writes under the shared lock so a
+                // concurrent delete/adopt cannot interleave into the swap).
+                stateMutex.withLock {
+                    packStateStore.writeCurrent(InstalledPack(
+                        version = "",
+                        regionCode = "",
+                        installedAt = kotlinx.datetime.Clock.System.now(),
+                        totalSizeBytes = 0,
+                        tilesPath = "",
+                        manifestSha256 = "",
+                    ))
+                    packStateStore.writePrevious(null)
+                }
                 deleteStaleDirs(keepVersions = emptySet())
             }
         } else {

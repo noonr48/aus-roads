@@ -26,6 +26,7 @@ import androidx.navigation.compose.currentBackStackEntryAsState
 import androidx.navigation.compose.rememberNavController
 import au.com.ausroads.ui.navigation.AusRoadsDestination
 import au.com.ausroads.ui.navigation.AusRoadsNavHost
+import au.com.ausroads.ui.navigation.resolveStartDestination
 
 @Composable
 fun AusRoadsApp() {
@@ -63,8 +64,8 @@ fun AusRoadsApp() {
             }
             AusRoadsNavHost(
                 navController = navController,
-                startDestination = backStackEntry?.destination?.route
-                    ?: AusRoadsDestination.Map.route,
+                startDestination =
+                    resolveStartDestination(backStackEntry?.destination?.route),
                 modifier = Modifier.weight(1f),
             )
         }
@@ -100,8 +101,8 @@ fun AusRoadsApp() {
         ) { innerPadding ->
             AusRoadsNavHost(
                 navController = navController,
-                startDestination = backStackEntry?.destination?.route
-                    ?: AusRoadsDestination.Map.route,
+                startDestination =
+                    resolveStartDestination(backStackEntry?.destination?.route),
                 modifier = Modifier.padding(innerPadding),
             )
         }

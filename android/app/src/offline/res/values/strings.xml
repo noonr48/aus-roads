@@ -1,0 +1,10 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  offline flavor override: strict privacy text accurate ONLY for this flavor
+  (no INTERNET, no location permissions, no Play Services dependency, and no
+  foreground service). The shared default lives in
+  src/main/res/values/strings.xml.
+-->
+<resources>
+    <string name="about_privacy_full">The AndroidManifest declares no INTERNET and no location permissions, and this build contains no Google Play Services dependency and no foreground service. All maps, search and routing run fully offline from the installed map pack. Nothing leaves your device: cloud backup and device-to-device transfer are disabled, and there is no analytics SDK, no crash reporter, no accounts, and no tracking of any kind. The privacy posture is documented in the project repository under docs/notes/privacy.md and reflected in this in-app privacy section.</string>
+</resources>

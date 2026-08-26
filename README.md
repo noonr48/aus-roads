@@ -2,7 +2,7 @@
 
 A privacy-focused offline map of South Australia with official live roadworks, incidents, closures, events, outback road warnings, and offline routing. **Play Store ready** — see `docs/notes/release-signing.md` and `docs/notes/play-store-listing.md`.
 
-**v1.0** — 25+ modules, 650+ tests. Public mirror of the internal line; current HEAD `84c0704`.
+**v1.0** — 25+ modules, 650+ tests. Public mirror of the internal line.
 
 ## Features
 

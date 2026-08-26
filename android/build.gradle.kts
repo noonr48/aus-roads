@@ -38,6 +38,7 @@ detekt {
         "data/pins/src/main",
         "data/settings/src/main",
         "data/pack/src/main",
+        "data/reports/src/main",
         "traffic/provider-api/src/main",
         "traffic/provider-stub/src/main",
         "traffic/provider-sa/src/main",

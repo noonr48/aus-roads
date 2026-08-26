@@ -15,9 +15,15 @@
 <manifest xmlns:android="http://schemas.android.com/apk/res/android"
     xmlns:tools="http://schemas.android.com/tools">
 
-    <!-- Location stripped on all flavors — safety net for transitive deps -->
+    <!-- Location stripped by default as a safety net for transitive deps: every
+         *LOCATION permission this app could plausibly inherit is removed here.
+         A flavor may deliberately opt back in by re-declaring the permission in
+         its own higher-priority manifest — only withNetwork does that (for the
+         "My Location" button); the offline flavor stays location-free. -->
     <uses-permission android:name="android.permission.ACCESS_COARSE_LOCATION" tools:node="remove" />
     <uses-permission android:name="android.permission.ACCESS_FINE_LOCATION" tools:node="remove" />
+    <uses-permission android:name="android.permission.ACCESS_BACKGROUND_LOCATION" tools:node="remove" />
+    <uses-permission android:name="android.permission.ACCESS_MEDIA_LOCATION" tools:node="remove" />
 
     <application
         android:name=".AusRoadsApp"

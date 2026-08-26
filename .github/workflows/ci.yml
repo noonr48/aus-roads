@@ -54,11 +54,11 @@ jobs:
           fi
           echo "Auditing $APK_PATH"
           AAPT2="$ANDROID_HOME/build-tools/$(ls -1 $ANDROID_HOME/build-tools | sort -V | tail -1)/aapt2"
-          PERMS=$("$AAPT2" dump permissions "$APK_PATH" 2>/dev/null || true)
+          PERMS=$("$AAPT2" dump permissions "$APK_PATH" 2>/dev/null)
           echo "$PERMS"
           # The auto-generated DYNAMIC_RECEIVER_NOT_EXPORTED_PERMISSION is fine;
           # it is an internal-only Android 14 permission with no privacy impact.
-          if echo "$PERMS" | grep -E "INTERNET|ACCESS_(FINE|COARSE|BACKGROUND)_LOCATION" ; then
+          if echo "$PERMS" | grep -E "INTERNET|ACCESS_(FINE|COARSE|BACKGROUND|MEDIA)_LOCATION" ; then
             echo "ERROR: offline flavor must not declare INTERNET or LOCATION permissions"
             exit 1
           fi
