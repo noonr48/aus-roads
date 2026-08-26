@@ -17,7 +17,7 @@ jobs:
   build:
     name: Build and test (ubuntu-latest, JDK 17)
     runs-on: ubuntu-latest
-    timeout-minutes: 30
+    timeout-minutes: 45  # release/R8 builds (witness step below) add several minutes
 
     steps:
       - name: Checkout
@@ -74,6 +74,37 @@ jobs:
         # app's tests are testOfflineDebugUnitTest / testWithNetworkDebugUnitTest,
         # which the old `testDebugUnitTest` target silently skipped.
         run: ./gradlew test
+
+      - name: Build release APKs (R8 / minification witness)
+        working-directory: android
+        # Release builds exercise the minified surface CI never otherwise touches:
+        # R8 shrinking must survive the reflection-based Valhalla configuration
+        # path (see proguard-rules.pro keeps) and resourceshrink, and the mapping
+        # files must be emitted. This witnesses BUILD-level integrity of the
+        # shipped-flavor binaries; on-device runtime behavior remains covered by
+        # the connected-test suite.
+        run: |
+          ./gradlew assembleOfflineRelease assembleWithNetworkRelease
+          OFFLINE_APK=$(find app/build/outputs/apk/offline/release -name '*.apk' | head -1)
+          NETWORK_APK=$(find app/build/outputs/apk/withNetwork/release -name '*.apk' | head -1)
+          if [ -z "$OFFLINE_APK" ] || [ -z "$NETWORK_APK" ]; then
+            echo "ERROR: expected both flavored release APKs to exist"; exit 1
+          fi
+          echo "offline: $OFFLINE_APK"
+          echo "withNetwork: $NETWORK_APK"
+          MAP_COUNT=$(find app/build/outputs/mapping -name 'mapping.txt' -size +0 | wc -l)
+          if [ "$MAP_COUNT" -lt 1 ]; then
+            echo "ERROR: no R8 mapping.txt emitted"; exit 1
+          fi
+
+      - name: Upload release artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: aus-roads-release-apk
+          path: |
+            android/app/build/outputs/apk/*/release/*.apk
+            android/app/build/outputs/mapping/*Release/mapping.txt
+          if-no-files-found: warn
 
       - name: Upload APK artifact
         uses: actions/upload-artifact@v4
