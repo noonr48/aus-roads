@@ -48,14 +48,22 @@ class MapPackManager @Inject constructor(
     internal val stateMutex: Mutex,
 ) {
     // A crashed observer coroutine must not take the process down: log it and
-    // keep the last published _installed value instead.
+    // keep the last published _installed value instead. The handler itself must
+    // be INFALLIBLE: an exception thrown from inside a CoroutineExceptionHandler
+    // is unhandled by definition, and android.util.Log detonates ("not mocked")
+    // on the JVM mockable jar — so a scope coroutine still running during JVM
+    // test teardown (files deleted, mocks undone) would otherwise surface as an
+    // uncaught test exception. runCatching keeps the handler's promise even
+    // where logging is unavailable.
     private val scope = CoroutineScope(
         SupervisorJob() + Dispatchers.IO + CoroutineExceptionHandler { _, throwable ->
-            android.util.Log.e(
-                "MapPackManager",
-                "map-pack state coroutine failed; keeping last published installed state",
-                throwable,
-            )
+            runCatching {
+                android.util.Log.e(
+                    "MapPackManager",
+                    "map-pack state coroutine failed; keeping last published installed state",
+                    throwable,
+                )
+            }
         },
     )
     private val workManager = WorkManager.getInstance(context)
