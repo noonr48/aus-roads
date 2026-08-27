@@ -21,7 +21,6 @@ import dagger.hilt.android.lifecycle.HiltViewModel
 import dagger.hilt.android.qualifiers.ApplicationContext
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Job
-import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.catch
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
@@ -29,7 +28,6 @@ import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
 import javax.inject.Inject
-import kotlin.math.min
 
 @HiltViewModel
 class NavigationViewModel @Inject constructor(
@@ -73,6 +71,17 @@ class NavigationViewModel @Inject constructor(
         lastRecalcTime = 0L
         isRecalculating = false
 
+        if (!hasLocationPermission()) {
+            // Privacy contract (docs/notes/privacy.md v0.7): "the app functions
+            // without it but navigation mode is unavailable." Without FINE
+            // location there are no position samples, so entering Navigating
+            // would fabricate progress toward arrival -- and the offline flavor
+            // strips that permission entirely. Refuse BEFORE publishing
+            // Navigating so downstream observers cannot latch a phantom session.
+            _state.update { NavigationState.LocationUnavailable }
+            return
+        }
+
         // Initialize TTS for voice guidance
         tts.initialize()
 
@@ -87,11 +96,7 @@ class NavigationViewModel @Inject constructor(
             )
         }
 
-        if (hasLocationPermission()) {
-            startGpsTracking()
-        } else {
-            startSimulatedTracking()
-        }
+        startGpsTracking()
     }
 
     fun stopNavigation() {
@@ -193,34 +198,6 @@ class NavigationViewModel @Inject constructor(
                 }
         }
     }
-
-    private fun startSimulatedTracking() {
-        navigationJob = viewModelScope.launch {
-            val geom = route?.geometry
-            if (geom.isNullOrEmpty()) return@launch
-            var simIndex = 0
-            val stepIntervalMs = 2000L // Move every 2 seconds
-            while (simIndex < geom.size - 1) {
-                delay(stepIntervalMs)
-                simIndex = min(simIndex + 1, geom.size - 1)
-                val simPos = geom[simIndex]
-                // Estimate speed from remaining route data
-                val remainingDist = calculateRemainingDistanceFromIndex(simIndex)
-                val remainingDuration = route?.durationSeconds?.toDouble()
-                    ?.let { it * (remainingDist / (route?.distanceMeters?.toDouble() ?: 1.0)) }
-                    ?: (remainingDist / 1000.0 / 60.0 * 3600.0)
-                val speedKmh = if (remainingDuration > 0) {
-                    (remainingDist / 1000.0) / (remainingDuration / 3600.0)
-                } else {
-                    60.0
-                }
-                updatePosition(simPos, speedKmh.coerceIn(1.0, 120.0))
-            }
-        }
-    }
-
-    private fun calculateRemainingDistanceFromIndex(fromIndex: Int): Double =
-        NavigationGeometry.distanceFromIndex(route?.geometry.orEmpty(), fromIndex)
 
     private fun getNextManeuverPoint(): GeoPoint? {
         val geom = route?.geometry ?: return null

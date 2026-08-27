@@ -90,6 +90,30 @@ fun NavigationOverlay(
                 modifier = modifier,
             )
         }
+        is NavigationState.LocationUnavailable -> {
+            // Honest dead-end for the gms-free offline flavor (FINE location
+            // stripped): surfacing beats silently simulating a drive.
+            Box(
+                modifier = modifier
+                    .fillMaxWidth()
+                    .padding(horizontal = 16.dp, vertical = 4.dp),
+            ) {
+                Row(
+                    modifier = Modifier
+                        .clip(RoundedCornerShape(8.dp))
+                        .background(MaterialTheme.colorScheme.errorContainer.copy(alpha = 0.9f))
+                        .padding(horizontal = 12.dp, vertical = 8.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(8.dp),
+                ) {
+                    Text(
+                        text = stringResource(R.string.nav_location_unavailable),
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onErrorContainer,
+                    )
+                }
+            }
+        }
     }
 }
 

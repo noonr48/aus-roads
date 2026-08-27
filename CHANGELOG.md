@@ -1,6 +1,7 @@
 # Changelog
 
 ## Unreleased
+- Navigation privacy enforcement: starting turn-by-turn navigation without fine-location permission now refuses honestly with an explicit "GPS required" banner (new `LocationUnavailable` state) instead of silently simulating route progress; the simulated-tracking path is removed and behavioral tests lock the contract in.
 - Pack lifecycle hardening: verification-failed/generic-failed downloads always delete poisoned partial artifacts (no endless resume loops); worker failures surface non-blank errors including OOM-class throwables (cancellation still passes through); delete/restore suppression tombstone and EvictionManager install/reconcile writes are serialized under one shared mutex; pack-state JSON writes are atomic (unique temp + rename); foreground-service start denial flows into the surfaced error instead of dying silently.
 - Release-readiness truth fixes: offline flavor additionally strips ACCESS_BACKGROUND_LOCATION / ACCESS_MEDIA_LOCATION (CI audit extended and made fail-closed); privacy About text is truthful per flavor (strict override for offline); version metadata aligned to v1.0 (versionCode 2).
 - Navigation shell guard: startDestination resolves through registered-route validation (unknown roots degrade to Map instead of crashing NavHost construction) with unit coverage incl. route-set drift invariants; destination registry initialization deferred (`by lazy`) fixing a cyclic <clinit> NPE plain-JVM tests exposed.

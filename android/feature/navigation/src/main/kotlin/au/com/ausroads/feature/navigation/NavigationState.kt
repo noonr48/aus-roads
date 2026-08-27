@@ -5,6 +5,14 @@ import au.com.ausroads.routing.engine.Maneuver
 
 sealed interface NavigationState {
     data object Idle : NavigationState
+
+    /**
+     * Navigation entry refused: ACCESS_FINE_LOCATION is unavailable (the privacy-first
+     * offline flavor strips it entirely), so genuine position tracking is impossible.
+     * Per docs/notes/privacy.md, navigation MODE is unavailable without the permission —
+     * the app must never fabricate progress toward arrival.
+     */
+    data object LocationUnavailable : NavigationState
     data class Navigating(
         val currentManeuver: Maneuver?,
         val nextManeuver: Maneuver?,

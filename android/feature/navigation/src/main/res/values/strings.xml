@@ -14,4 +14,5 @@
     <string name="nav_recalculated_tts">Route recalculated.</string>
     <string name="nav_recalc_failed_tts">Recalculation failed. Please stop and re-route.</string>
     <string name="nav_arrived_tts">You have arrived at your destination</string>
+    <string name="nav_location_unavailable">GPS location is required for turn-by-turn navigation. Enable location to navigate.</string>
 </resources>

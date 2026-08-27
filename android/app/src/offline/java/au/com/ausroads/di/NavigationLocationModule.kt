@@ -12,10 +12,12 @@ import kotlinx.coroutines.flow.emptyFlow
 
 /**
  * offline flavor: binds a no-op navigation location source. The offline flavor
- * declares no location permission and links no Google Play Services, so there is
- * no live position stream — turn-by-turn navigation falls back to its
- * route-simulated tracking (NavigationViewModel.startSimulatedTracking). Binding a
- * no-op keeps the offline graph location-free by construction.
+ * declares no location permission and links no Google Play Services, so there
+ * is no live position stream — turn-by-turn navigation therefore cannot run:
+ * NavigationViewModel.startNavigation() refuses with
+ * NavigationState.LocationUnavailable (simulated tracking was removed so the
+ * app never fabricates progress toward arrival). Binding a no-op keeps the
+ * offline graph location-free by construction.
  */
 @Module
 @InstallIn(SingletonComponent::class)
