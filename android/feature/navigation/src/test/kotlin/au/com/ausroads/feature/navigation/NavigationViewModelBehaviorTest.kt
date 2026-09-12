@@ -263,6 +263,46 @@ class NavigationViewModelBehaviorTest {
         verify(exactly = 1) { tts.speakText(any()) }
     }
 
+    @Test
+    fun `camera still returned by the pack after passing does not resurrect`() {
+        grantPermission(granted = true)
+        every { locationSource.locationUpdates(any()) } returns emptyFlow()
+        viewModel.startNavigation(sampleRoute())
+        val camera = RoadHazardCamera(
+            id = "cam-near",
+            latitude = -34.8987,
+            longitude = 138.6005,
+            maxspeedKmh = 60,
+            wayName = null,
+            distanceMeters = 200.0,
+        )
+        // The pack keeps returning the camera for every refresh — only the
+        // ProximityEngine isInside gate (not the retainAll prune) can stop the
+        // passed camera from re-entering the warning.
+        roadHazards.contextToReturn = RoadHazardContext(
+            speedLimitKmh = 60,
+            cameras = listOf(camera),
+        )
+
+        val onRoute = GeoPoint(longitude = 138.6005, latitude = -34.9005)
+        viewModel.updatePosition(onRoute, speedKmh = 50.0, bearingDegrees = 0f)
+        assertThat(
+            (viewModel.state.value as NavigationState.Navigating).cameraWarning?.id,
+        ).isEqualTo("cam-near")
+
+        // Far past the camera but still inside the 2 km query window: the fake
+        // returns it again on refresh, membership has exited (>600 m), so the
+        // isInside gate must block adoption on every subsequent fix.
+        val farPast = GeoPoint(longitude = 138.6098, latitude = -34.9098)
+        viewModel.updatePosition(farPast, speedKmh = 50.0, bearingDegrees = 0f)
+        viewModel.updatePosition(farPast, speedKmh = 50.0, bearingDegrees = 0f)
+        viewModel.updatePosition(farPast, speedKmh = 50.0, bearingDegrees = 0f)
+
+        val state = viewModel.state.value as NavigationState.Navigating
+        assertThat(state.cameraWarning).isNull()
+        verify(exactly = 1) { tts.speakText(any()) }
+    }
+
     /** Pack-free stand-in for the road-hazard port. */
     private class FakeRoadHazardSource : RoadHazardSource {
         var contextToReturn = RoadHazardContext(

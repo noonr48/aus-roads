@@ -435,8 +435,10 @@ class NavigationViewModel @Inject constructor(
      */
     private fun startGpsTracking() {
         navigationJob = viewModelScope.launch {
-            while (isActive && _state.value is NavigationState.Navigating ||
-                _state.value is NavigationState.Recalculating
+            while (isActive && (
+                _state.value is NavigationState.Navigating ||
+                    _state.value is NavigationState.Recalculating
+                )
             ) {
                 try {
                     locationProvider.locationUpdates(intervalMs = 1000)
@@ -479,7 +481,7 @@ class NavigationViewModel @Inject constructor(
                 delay(GPS_WATCHDOG_INTERVAL_MS)
                 val s = _state.value
                 if (s is NavigationState.Navigating && lastFixElapsedRealtime > 0L) {
-                    val stale = System.currentTimeMillis() - lastFixElapsedRealtime > GPS_STALE_MS
+                    val stale = SystemClock.elapsedRealtime() - lastFixElapsedRealtime > GPS_STALE_MS
                     if (stale != s.gpsLost) {
                         _state.update {
                             if (it is NavigationState.Navigating) it.copy(gpsLost = stale) else it
@@ -555,11 +557,15 @@ class NavigationViewModel @Inject constructor(
             } catch (e: CancellationException) {
                 throw e
             } catch (_: Exception) {
-                if (_state.value is NavigationState.Recalculating) {
+                val stillRecalculating = _state.value is NavigationState.Recalculating
+                if (stillRecalculating) {
                     _state.update { currentState }
-                }
-                if (ttsEnabled && _state.value is NavigationState.Recalculating) {
-                    tts.speakText(context.getString(R.string.nav_recalc_failed_tts))
+                    // Announce only when the restore actually happened — the
+                    // guard must be captured BEFORE the update flips the state
+                    // back to Navigating (previous ordering made this unreachable).
+                    if (ttsEnabled) {
+                        tts.speakText(context.getString(R.string.nav_recalc_failed_tts))
+                    }
                 }
             } finally {
                 isRecalculating = false

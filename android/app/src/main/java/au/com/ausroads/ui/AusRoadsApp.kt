@@ -44,7 +44,11 @@ fun AusRoadsApp() {
 
     if (isTablet) {
         Row(modifier = Modifier.fillMaxSize()) {
-            NavigationRail {
+            // Rail hides with the phone bottom bar during turn-by-turn — the
+            // navigation banner owns the edge and tabs are one mis-tap from
+            // route death on tablets too.
+            if (!navigationChromeHidden) {
+                NavigationRail {
                 AusRoadsDestination.bottomBarItems.forEach { destination ->
                     val selected = backStackEntry?.destination?.hierarchy
                         ?.any { it.route == destination.route } == true
@@ -67,6 +71,7 @@ fun AusRoadsApp() {
                         },
                         label = { Text(stringResource(destination.labelRes)) },
                     )
+                }
                 }
             }
             AusRoadsNavHost(
