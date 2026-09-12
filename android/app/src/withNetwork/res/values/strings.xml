@@ -1,0 +1,8 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <!-- Ongoing notification shown by NavigationForegroundService while a
+         turn-by-turn session keeps GPS alive with the screen off. -->
+    <string name="nav_service_title">Turn-by-turn navigation active</string>
+    <string name="nav_service_stop">Stop</string>
+    <string name="nav_service_channel_name">Navigation</string>
+</resources>

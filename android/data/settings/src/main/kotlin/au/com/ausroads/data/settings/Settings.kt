@@ -11,6 +11,7 @@ data class Settings(
     val theme: ThemeMode = ThemeMode.System,
     val showAttributionOverlay: Boolean = true,
     val liveTrafficEnabled: Boolean = false,
+    val speedCamerasEnabled: Boolean = true,
     val enabledTrafficSources: Set<String> = setOf("traffic-sa", "dit-outback"),
     val ttsEnabled: Boolean = true,
     val congestionOverlayEnabled: Boolean = false,

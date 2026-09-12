@@ -36,9 +36,9 @@ android {
     namespace = "au.com.ausroads"
     defaultConfig {
         applicationId = "au.com.ausroads"
-        // Shipped release v1.0 (CHANGELOG.md "## v1.0"); code 2 supersedes the v0.1.0 build.
-        versionCode = 2
-        versionName = "1.0"
+        // Shipped release v1.1 (CHANGELOG.md "## v1.1"); code 3 supersedes the v1.0 build.
+        versionCode = 3
+        versionName = "1.1"
         // Default runner uses the real AusRoadsApp (@HiltAndroidApp), so
         // instrumented tests exercise the production Hilt graph + HiltWorkerFactory.
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
@@ -158,6 +158,8 @@ dependencies {
     implementation(project(":traffic:provider-nsw"))
     implementation(project(":routing:engine-api"))
     implementation(project(":routing:engine-valhalla"))
+    // Turn/camera glyphs used by the map + navigation surfaces.
+    implementation(libs.compose.material.icons.extended)
     implementation(project(":offline:pack-api"))
     implementation(project(":offline:search"))
     implementation(project(":offline:pack-downloader"))

@@ -1,5 +1,10 @@
 package au.com.ausroads.ui.map
 
+import android.Manifest
+import android.content.pm.PackageManager
+import android.os.Build
+import androidx.activity.compose.rememberLauncherForActivityResult
+import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
@@ -25,6 +30,7 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.tooling.preview.Preview
@@ -32,6 +38,15 @@ import au.com.ausroads.R
 import au.com.ausroads.routing.engine.Maneuver
 import au.com.ausroads.routing.engine.RouteOptions
 import au.com.ausroads.routing.engine.RouteResult
+import android.content.Context
+import androidx.core.content.ContextCompat
+
+/** True when POST_NOTIFICATIONS is declared-but-ungranted (API 33+ only). */
+private fun needsNotificationPermission(context: Context): Boolean =
+    Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU &&
+        ContextCompat.checkSelfPermission(
+            context, Manifest.permission.POST_NOTIFICATIONS,
+        ) != PackageManager.PERMISSION_GRANTED
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Suppress("LongParameterList") // Compose screen entry point; params mirror MapScreenContent's pattern
@@ -111,10 +126,43 @@ private fun RouteContent(
         }
 
         if (navigationViewModel != null) {
-            Button(
-                onClick = {
+            val context = LocalContext.current
+            // First-run gate: request location (then notifications on 13+) at the
+            // point of use, so Start never lands on the refusal banner cold.
+            val notificationLauncher = rememberLauncherForActivityResult(
+                ActivityResultContracts.RequestPermission(),
+            ) {
+                navigationViewModel.startNavigation(result)
+                onDismiss()
+            }
+            val locationLauncher = rememberLauncherForActivityResult(
+                ActivityResultContracts.RequestPermission(),
+            ) { granted ->
+                if (granted && needsNotificationPermission(context)) {
+                    notificationLauncher.launch(Manifest.permission.POST_NOTIFICATIONS)
+                } else {
+                    // Denied (or pre-13/no ask needed): start anyway — the VM's
+                    // permission guard publishes the honest, dismissible
+                    // LocationUnavailable banner instead of a silent dead-end.
                     navigationViewModel.startNavigation(result)
                     onDismiss()
+                }
+            }
+            Button(
+                onClick = {
+                    val hasLocation = ContextCompat.checkSelfPermission(
+                        context, Manifest.permission.ACCESS_FINE_LOCATION,
+                    ) == PackageManager.PERMISSION_GRANTED
+                    when {
+                        !hasLocation ->
+                            locationLauncher.launch(Manifest.permission.ACCESS_FINE_LOCATION)
+                        needsNotificationPermission(context) ->
+                            notificationLauncher.launch(Manifest.permission.POST_NOTIFICATIONS)
+                        else -> {
+                            navigationViewModel.startNavigation(result)
+                            onDismiss()
+                        }
+                    }
                 },
                 modifier = Modifier.fillMaxWidth(),
             ) {

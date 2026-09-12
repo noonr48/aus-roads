@@ -10,6 +10,10 @@
     <!-- Location permissions for "My Location" button and navigation GPS -->
     <uses-permission android:name="android.permission.ACCESS_COARSE_LOCATION" />
     <uses-permission android:name="android.permission.ACCESS_FINE_LOCATION" />
+    <!-- Location-type foreground service that keeps navigation GPS alive while
+         the screen is off or the app is backgrounded (API 34+ requires both). -->
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_LOCATION" />
 
     <!-- Android Auto descriptor names a com.google.android.gms.* component, so it is
          declared only in the withNetwork flavor to keep the privacy-first offline
@@ -28,5 +32,15 @@
             android:name="androidx.work.impl.foreground.SystemForegroundService"
             android:foregroundServiceType="dataSync"
             tools:node="merge" />
+
+        <!-- Keeps a turn-by-turn session's GPS updates alive while the screen is
+             off or the app is backgrounded. The manifest type must match the
+             runtime FOREGROUND_SERVICE_TYPE_LOCATION promotion in
+             NavigationForegroundService. Confined to withNetwork (only this
+             flavor has location code). -->
+        <service
+            android:name="au.com.ausroads.navigation.NavigationForegroundService"
+            android:exported="false"
+            android:foregroundServiceType="location" />
     </application>
 </manifest>

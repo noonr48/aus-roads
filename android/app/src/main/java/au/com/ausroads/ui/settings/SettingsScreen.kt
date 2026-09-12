@@ -103,6 +103,27 @@ fun SettingsScreen(
 
         HorizontalDivider()
 
+        // Speed cameras
+        Section(title = stringResource(R.string.settings_speed_cameras)) {
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.SpaceBetween,
+            ) {
+                Text(
+                    text = stringResource(R.string.settings_speed_cameras_hint),
+                    style = MaterialTheme.typography.bodySmall,
+                    modifier = Modifier.weight(1f),
+                )
+                Switch(
+                    checked = settings.speedCamerasEnabled,
+                    onCheckedChange = viewModel::setSpeedCamerasEnabled,
+                )
+            }
+        }
+
+        HorizontalDivider()
+
         // TTS toggle
         Section(title = stringResource(R.string.settings_tts)) {
             Row(

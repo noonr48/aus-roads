@@ -1,0 +1,5 @@
+# Pack-builder working state: PBF caches, built artifacts, python venv
+cache/
+dist/
+.venv/
+__pycache__/

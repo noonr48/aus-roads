@@ -17,6 +17,9 @@ import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.res.stringResource
@@ -34,6 +37,10 @@ fun AusRoadsApp() {
     val backStackEntry by navController.currentBackStackEntryAsState()
     val context = LocalContext.current
     val isTablet = context.resources.configuration.smallestScreenWidthDp >= 600
+
+    // Phone chrome hides while turn-by-turn navigation owns the bottom edge
+    // (the nav banner + End button need that space and mis-taps near tabs end routes).
+    var navigationChromeHidden by remember { mutableStateOf(false) }
 
     if (isTablet) {
         Row(modifier = Modifier.fillMaxSize()) {
@@ -67,11 +74,13 @@ fun AusRoadsApp() {
                 startDestination =
                     resolveStartDestination(backStackEntry?.destination?.route),
                 modifier = Modifier.weight(1f),
+                onNavigationActiveChanged = { navigationChromeHidden = it },
             )
         }
     } else {
         Scaffold(
             bottomBar = {
+                if (!navigationChromeHidden) {
                 NavigationBar {
                     AusRoadsDestination.bottomBarItems.forEach { destination ->
                         val selected = backStackEntry?.destination?.hierarchy
@@ -97,6 +106,7 @@ fun AusRoadsApp() {
                         )
                     }
                 }
+                }
             },
         ) { innerPadding ->
             AusRoadsNavHost(
@@ -104,6 +114,7 @@ fun AusRoadsApp() {
                 startDestination =
                     resolveStartDestination(backStackEntry?.destination?.route),
                 modifier = Modifier.padding(innerPadding),
+                onNavigationActiveChanged = { navigationChromeHidden = it },
             )
         }
     }

@@ -15,6 +15,11 @@ dependencies {
     implementation(project(":traffic:congestion-api"))
     implementation(project(":ui:designsystem"))
     implementation(project(":navigation:tts"))
+    // Driver-assist state machines (hysteresis over-speed + geofence proximity)
+    // consumed by NavigationViewModel for speed-limit and camera alerts.
+    implementation(project(":feature:trip"))
+    // Maneuver turn icons (TurnLeft/TurnRight/… live in the extended set).
+    implementation(libs.compose.material.icons.extended)
 
     implementation(libs.kotlinx.coroutines.core)
     implementation(libs.kotlinx.datetime)

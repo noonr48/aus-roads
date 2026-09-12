@@ -100,6 +100,7 @@ fun AusRoadsNavHost(
     navController: NavHostController,
     startDestination: String,
     modifier: Modifier = Modifier,
+    onNavigationActiveChanged: (Boolean) -> Unit = {},
 ) {
     NavHost(
         navController = navController,
@@ -161,6 +162,8 @@ fun AusRoadsNavHost(
                         avoidFerries = opts.avoidFerries,
                     )
                 },
+                camerasEnabled = settings.speedCamerasEnabled,
+                onNavigationActiveChanged = onNavigationActiveChanged,
             )
         }
         composable(AusRoadsDestination.Nearby.route) {

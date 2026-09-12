@@ -75,6 +75,17 @@ internal fun rememberUserLocation(hasPermission: Boolean): State<Location?> {
 
         @SuppressLint("MissingPermission")
         fun start() {
+            // Explicit guard: lint's MissingPermission flow analysis (and honest
+            // runtime behaviour) both require a live permission check here —
+            // @SuppressLint on a local function inside a lambda is not reliably
+            // honoured, and the permission can be revoked while backgrounded.
+            if (ContextCompat.checkSelfPermission(
+                    context, Manifest.permission.ACCESS_FINE_LOCATION,
+                ) != PackageManager.PERMISSION_GRANTED
+            ) {
+                Log.w(TAG, "location permission missing; skipping location updates")
+                return
+            }
             Log.i(TAG, "starting fused location updates")
             // Seed immediately: lastLocation is fast but often null on a cold device,
             // so also request a single fresh fix so the blue dot appears promptly.

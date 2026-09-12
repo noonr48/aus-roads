@@ -244,4 +244,9 @@
     <string name="nearby_cat_water">Drinking water</string>
     <string name="nearby_cat_camping">Camping</string>
     <string name="nearby_cat_supermarket">Supermarket</string>
+    <string name="map_camera_title">Speed camera</string>
+    <string name="map_camera_limit">Enforced limit %1$d km/h</string>
+    <string name="map_camera_limit_unknown">Enforced limit unknown</string>
+    <string name="settings_speed_cameras">Speed cameras</string>
+    <string name="settings_speed_cameras_hint">Show fixed speed cameras on the map and warn while navigating</string>
 </resources>

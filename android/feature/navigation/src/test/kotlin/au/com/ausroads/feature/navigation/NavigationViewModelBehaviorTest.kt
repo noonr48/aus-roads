@@ -40,6 +40,7 @@ class NavigationViewModelBehaviorTest {
     private lateinit var locationSource: NavigationLocationSource
     private lateinit var tts: NavigationTts
     private lateinit var routingEngine: RoutingEngine
+    private lateinit var roadHazards: FakeRoadHazardSource
     private lateinit var viewModel: NavigationViewModel
 
     @Before
@@ -49,7 +50,13 @@ class NavigationViewModelBehaviorTest {
         locationSource = mockk(relaxed = true)
         tts = mockk(relaxed = true)
         routingEngine = mockk(relaxed = true)
-        viewModel = NavigationViewModel(context, locationSource, tts, routingEngine)
+        // SystemClock.elapsedRealtime (the staleness watchdog's clock) is an
+        // android framework method that throws on the JVM mockable jar — pin it
+        // to a monotonic constant (house static-mock pattern, see grantPermission).
+        mockkStatic(android.os.SystemClock::class)
+        every { android.os.SystemClock.elapsedRealtime() } returns 1_000L
+        roadHazards = FakeRoadHazardSource()
+        viewModel = NavigationViewModel(context, locationSource, tts, routingEngine, roadHazards)
     }
 
     @After
@@ -135,5 +142,138 @@ class NavigationViewModelBehaviorTest {
         viewModel.stopNavigation()
 
         assertThat(viewModel.state.value).isEqualTo(NavigationState.Idle)
+    }
+
+    @Test
+    fun `dismissLocationUnavailable returns to Idle`() {
+        grantPermission(granted = false)
+        viewModel.startNavigation(sampleRoute())
+
+        viewModel.dismissLocationUnavailable()
+
+        assertThat(viewModel.state.value).isEqualTo(NavigationState.Idle)
+    }
+
+    @Test
+    fun `posted limit flows into Navigating state with hysteresis overspeed`() {
+        grantPermission(granted = true)
+        every { locationSource.locationUpdates(any()) } returns emptyFlow()
+        viewModel.startNavigation(sampleRoute())
+        roadHazards.contextToReturn = RoadHazardContext(
+            speedLimitKmh = 60,
+            cameras = emptyList(),
+        )
+
+        val onRoute = GeoPoint(longitude = 138.6005, latitude = -34.9005)
+
+        viewModel.updatePosition(onRoute, speedKmh = 50.0, bearingDegrees = 0f)
+        val atLimit = viewModel.state.value as NavigationState.Navigating
+        assertThat(atLimit.speedLimitKmh).isEqualTo(60)
+        assertThat(atLimit.isOverspeeding).isFalse()
+        assertThat(atLimit.awaitingGpsFix).isFalse()
+
+        viewModel.updatePosition(onRoute, speedKmh = 70.0, bearingDegrees = 0f)
+        assertThat((viewModel.state.value as NavigationState.Navigating).isOverspeeding).isTrue()
+
+        // Inside the 5 km/h buffer band the OVER state latches (jitter guard).
+        viewModel.updatePosition(onRoute, speedKmh = 61.0, bearingDegrees = 0f)
+        assertThat((viewModel.state.value as NavigationState.Navigating).isOverspeeding).isTrue()
+
+        viewModel.updatePosition(onRoute, speedKmh = 58.0, bearingDegrees = 0f)
+        assertThat((viewModel.state.value as NavigationState.Navigating).isOverspeeding).isFalse()
+    }
+
+    @Test
+    fun `camera within warning radius announces once and publishes warning`() {
+        grantPermission(granted = true)
+        every { locationSource.locationUpdates(any()) } returns emptyFlow()
+        viewModel.startNavigation(sampleRoute())
+        val camera = RoadHazardCamera(
+            id = "cam-1",
+            // ~200 m north of the on-route position, dead ahead of bearing 0.
+            latitude = -34.8987,
+            longitude = 138.6005,
+            maxspeedKmh = 60,
+            wayName = "Main North Rd",
+            distanceMeters = 200.0,
+        )
+        roadHazards.contextToReturn = RoadHazardContext(
+            speedLimitKmh = 60,
+            cameras = listOf(camera),
+        )
+
+        val onRoute = GeoPoint(longitude = 138.6005, latitude = -34.9005)
+        viewModel.updatePosition(onRoute, speedKmh = 50.0, bearingDegrees = 0f)
+
+        val state = viewModel.state.value as NavigationState.Navigating
+        assertThat(state.cameraWarning).isNotNull()
+        assertThat(state.cameraWarning?.id).isEqualTo("cam-1")
+        assertThat(state.cameraWarning?.distanceMeters).isNotNull()
+        verify(exactly = 1) { tts.speakText(any()) }
+
+        // A subsequent fix at the same place must not re-announce.
+        viewModel.updatePosition(onRoute, speedKmh = 50.0, bearingDegrees = 0f)
+        verify(exactly = 1) { tts.speakText(any()) }
+        assertThat(
+            (viewModel.state.value as NavigationState.Navigating).cameraWarning?.id,
+        ).isEqualTo("cam-1")
+    }
+
+    @Test
+    fun `passed camera does not resurrect the warning on later fixes`() {
+        grantPermission(granted = true)
+        every { locationSource.locationUpdates(any()) } returns emptyFlow()
+        viewModel.startNavigation(sampleRoute())
+        val camera = RoadHazardCamera(
+            id = "cam-pass",
+            latitude = -34.8987,
+            longitude = 138.6005,
+            maxspeedKmh = 60,
+            wayName = null,
+            distanceMeters = 200.0,
+        )
+        roadHazards.contextToReturn = RoadHazardContext(
+            speedLimitKmh = 60,
+            cameras = listOf(camera),
+        )
+
+        // Enter the camera zone: warning publishes + one announcement.
+        val onRoute = GeoPoint(longitude = 138.6005, latitude = -34.9005)
+        viewModel.updatePosition(onRoute, speedKmh = 50.0, bearingDegrees = 0f)
+        assertThat(
+            (viewModel.state.value as NavigationState.Navigating).cameraWarning?.id,
+        ).isEqualTo("cam-pass")
+
+        // Drive well past the camera (beyond radius * exit slack) while staying
+        // near a route vertex so the off-route recalc path does not fire (the
+        // vertex-nearest engine flags mid-segment positions >100 m from any
+        // vertex). Vertex 2 is ~1.2 km from the camera — beyond the 600 m exit.
+        val farPast = GeoPoint(longitude = 138.6098, latitude = -34.9098)
+        roadHazards.contextToReturn = RoadHazardContext(
+            speedLimitKmh = 60,
+            cameras = emptyList(),
+        )
+        viewModel.updatePosition(farPast, speedKmh = 50.0, bearingDegrees = 0f)
+        viewModel.updatePosition(farPast, speedKmh = 50.0, bearingDegrees = 0f)
+        viewModel.updatePosition(farPast, speedKmh = 50.0, bearingDegrees = 0f)
+
+        val state = viewModel.state.value as NavigationState.Navigating
+        assertThat(state.cameraWarning).isNull()
+        // Still exactly the single entry announcement.
+        verify(exactly = 1) { tts.speakText(any()) }
+    }
+
+    /** Pack-free stand-in for the road-hazard port. */
+    private class FakeRoadHazardSource : RoadHazardSource {
+        var contextToReturn = RoadHazardContext(
+            speedLimitKmh = null,
+            cameras = emptyList(),
+        )
+
+        override suspend fun contextAt(
+            latitude: Double,
+            longitude: Double,
+            radiusMeters: Double,
+        ) = contextToReturn
     }
 }

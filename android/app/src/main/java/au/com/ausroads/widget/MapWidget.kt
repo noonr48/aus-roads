@@ -22,7 +22,8 @@ import androidx.glance.state.PreferencesGlanceStateDefinition
 import androidx.glance.text.FontWeight
 import androidx.glance.text.Text
 import androidx.glance.text.TextStyle
-import androidx.glance.unit.ColorProvider
+import androidx.compose.ui.graphics.Color
+import androidx.glance.color.ColorProvider
 import au.com.ausroads.MainActivity
 import au.com.ausroads.R
 
@@ -72,7 +73,7 @@ private fun MapWidgetContent(state: MapWidgetState, context: Context) {
     Column(
         modifier = GlanceModifier
             .fillMaxSize()
-            .background(ColorProvider(COLOR_BACKGROUND))
+            .background(ColorProvider(Color(COLOR_BACKGROUND), Color(COLOR_BACKGROUND)))
             .padding(16.dp)
             .clickable(actionStartActivity<MainActivity>()),
         verticalAlignment = Alignment.Top,
@@ -81,7 +82,7 @@ private fun MapWidgetContent(state: MapWidgetState, context: Context) {
         Text(
             text = context.getString(R.string.app_name),
             style = TextStyle(
-                color = ColorProvider(COLOR_WHITE),
+                color = ColorProvider(Color(COLOR_WHITE), Color(COLOR_WHITE)),
                 fontSize = 18.sp,
                 fontWeight = FontWeight.Bold,
             ),
@@ -90,7 +91,7 @@ private fun MapWidgetContent(state: MapWidgetState, context: Context) {
         Text(
             text = packLabel,
             style = TextStyle(
-                color = ColorProvider(COLOR_LTGRAY),
+                color = ColorProvider(Color(COLOR_LTGRAY), Color(COLOR_LTGRAY)),
                 fontSize = 12.sp,
             ),
             modifier = GlanceModifier.padding(top = 4.dp),
@@ -103,14 +104,14 @@ private fun MapWidgetContent(state: MapWidgetState, context: Context) {
             Text(
                 text = "● ",
                 style = TextStyle(
-            color = ColorProvider(statusColor),
+            color = ColorProvider(Color(statusColor), Color(statusColor)),
                 fontSize = 14.sp,
             ),
         )
         Text(
             text = statusText,
             style = TextStyle(
-                color = ColorProvider(COLOR_OK),
+                color = ColorProvider(Color(COLOR_OK), Color(COLOR_OK)),
                     fontSize = 12.sp,
                 ),
             )
@@ -119,7 +120,7 @@ private fun MapWidgetContent(state: MapWidgetState, context: Context) {
         Text(
             text = context.getString(R.string.widget_tap_to_open),
             style = TextStyle(
-                color = ColorProvider(COLOR_SUBTITLE),
+                color = ColorProvider(Color(COLOR_SUBTITLE), Color(COLOR_SUBTITLE)),
                 fontSize = 10.sp,
             ),
             modifier = GlanceModifier.padding(top = 8.dp),

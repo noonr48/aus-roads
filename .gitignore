@@ -57,3 +57,9 @@ tools/map-pack-builder/valhalla-build/
 # --- Python caches ---
 __pycache__/
 *.pyc
+
+# --- Release signing (lane D audit: keep secrets out of the repo) ---
+signing.properties
+**/signing.properties
+*.jks
+*.keystore

@@ -21,6 +21,7 @@ class VicRoadsProviderTest {
         override suspend fun setTheme(mode: ThemeMode) {}
         override suspend fun setShowAttributionOverlay(show: Boolean) {}
         override suspend fun setLiveTrafficEnabled(enabled: Boolean) {}
+        override suspend fun setSpeedCamerasEnabled(enabled: Boolean) {}
         override suspend fun setTrafficSourceEnabled(sourceId: String, enabled: Boolean) {}
         override suspend fun setTtsEnabled(enabled: Boolean) {}
         override suspend fun setCongestionOverlayEnabled(enabled: Boolean) {}

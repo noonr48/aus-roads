@@ -1,6 +1,16 @@
 # Changelog
 
-## Unreleased
+## v1.1 (2026-09-13) — production readiness: driver-assist features, navigation hardening, design polish
+- Speed cameras, visible at last: fixed cameras render on the map (dark disc + limit label, tap for details + directions) and warn while navigating — proximity banner + spoken alert within 400 m ahead of the driver, at most once per camera per session (bearing-filtered so the opposite carriageway stays quiet). Settings toggle included. The new SA pack (2026-09-13) carries the `road_cameras` table — 167 fixed cameras from the 2026-09-11 OSM extract — plus refreshed road_speed (51k roads) and search (130k features).
+- Speed limit + over-speed actually wired: the posted limit (was dead UI — never populated) now renders signage-sized in the nav banner and over-speed highlighting uses hysteresis (5 km/h entry buffer, limit-clear exit) so GPS jitter cannot flap it.
+- Navigation survives a pocketed screen: a location-type foreground service (withNetwork flavor) keeps GPS + TTS alive in the background with a Stop action; the offline flavor keeps its honest no-location posture.
+- First-run navigation no longer dead-ends: Start Navigation requests location permission (then notifications on Android 13+) at the point of use, and the "GPS required" refusal banner is dismissible instead of permanent.
+- GPS-flow hardening: the silent exception swallow is replaced by bounded retry with backoff; explicit waiting-for-fix and GPS-lost states surface instead of frozen numbers.
+- Nav banner redesign: turn arrow + glance-sized distance-to-next-turn, high-contrast surface card (the old green-on-white ran ~2.9:1), trip-progress strip, current speed at headline size, and a full-width End button clear of the glance data.
+- Phone chrome hides during active navigation — the bottom tabs were one mis-tap from route death and collided with the banner.
+- Release signing live: signed release APKs for both flavors (arm64-v8a); keystore and signing config stay outside the repo (gitignore hardened).
+
+## Unreleased (v1.0.x hardening, August 2026)
 - Navigation privacy enforcement: starting turn-by-turn navigation without fine-location permission now refuses honestly with an explicit "GPS required" banner (new `LocationUnavailable` state) instead of silently simulating route progress; the simulated-tracking path is removed and behavioral tests lock the contract in.
 - Pack lifecycle hardening: verification-failed/generic-failed downloads always delete poisoned partial artifacts (no endless resume loops); worker failures surface non-blank errors including OOM-class throwables (cancellation still passes through); delete/restore suppression tombstone and EvictionManager install/reconcile writes are serialized under one shared mutex; pack-state JSON writes are atomic (unique temp + rename); foreground-service start denial flows into the surfaced error instead of dying silently.
 - Release-readiness truth fixes: offline flavor additionally strips ACCESS_BACKGROUND_LOCATION / ACCESS_MEDIA_LOCATION (CI audit extended and made fail-closed); privacy About text is truthful per flavor (strict override for offline); version metadata aligned to v1.0 (versionCode 2).

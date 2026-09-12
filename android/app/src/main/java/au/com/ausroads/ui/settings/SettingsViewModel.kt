@@ -42,6 +42,12 @@ class SettingsViewModel @Inject constructor(
         }
     }
 
+    fun setSpeedCamerasEnabled(enabled: Boolean) {
+        viewModelScope.launch {
+            settingsRepository.setSpeedCamerasEnabled(enabled)
+        }
+    }
+
     fun setShowAttribution(show: Boolean) {
         viewModelScope.launch {
             settingsRepository.setShowAttributionOverlay(show)

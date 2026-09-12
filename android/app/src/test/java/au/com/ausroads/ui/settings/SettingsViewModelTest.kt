@@ -89,6 +89,10 @@ class SettingsViewModelTest {
             _settings.value = _settings.value.copy(liveTrafficEnabled = enabled)
         }
 
+        override suspend fun setSpeedCamerasEnabled(enabled: Boolean) {
+            _settings.value = _settings.value.copy(speedCamerasEnabled = enabled)
+        }
+
         override suspend fun setTrafficSourceEnabled(sourceId: String, enabled: Boolean) {
             val current = _settings.value.enabledTrafficSources
             _settings.value = _settings.value.copy(

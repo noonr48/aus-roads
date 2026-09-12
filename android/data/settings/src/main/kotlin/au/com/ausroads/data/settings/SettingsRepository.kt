@@ -21,6 +21,7 @@ interface SettingsRepository {
     suspend fun setTheme(mode: ThemeMode)
     suspend fun setShowAttributionOverlay(show: Boolean)
     suspend fun setLiveTrafficEnabled(enabled: Boolean)
+    suspend fun setSpeedCamerasEnabled(enabled: Boolean)
     suspend fun setTrafficSourceEnabled(sourceId: String, enabled: Boolean)
     suspend fun setTtsEnabled(enabled: Boolean)
     suspend fun setCongestionOverlayEnabled(enabled: Boolean)
@@ -38,6 +39,7 @@ class DataStoreSettingsRepository @Inject constructor(
         val THEME = stringPreferencesKey("theme")
         val SHOW_ATTRIBUTION = booleanPreferencesKey("show_attribution")
         val LIVE_TRAFFIC = booleanPreferencesKey("live_traffic")
+        val SPEED_CAMERAS = booleanPreferencesKey("speed_cameras")
         val ENABLED_TRAFFIC_SOURCES = stringSetPreferencesKey("enabled_traffic_sources")
         val TTS_ENABLED = booleanPreferencesKey("tts_enabled")
         val CONGESTION_OVERLAY = booleanPreferencesKey("congestion_overlay")
@@ -55,6 +57,7 @@ class DataStoreSettingsRepository @Inject constructor(
                 ?: ThemeMode.System,
             showAttributionOverlay = prefs[Keys.SHOW_ATTRIBUTION] ?: true,
             liveTrafficEnabled = prefs[Keys.LIVE_TRAFFIC] ?: false,
+            speedCamerasEnabled = prefs[Keys.SPEED_CAMERAS] ?: true,
             enabledTrafficSources = prefs[Keys.ENABLED_TRAFFIC_SOURCES]
                 ?: setOf("traffic-sa", "dit-outback"),
             ttsEnabled = prefs[Keys.TTS_ENABLED] ?: true,
@@ -77,6 +80,10 @@ class DataStoreSettingsRepository @Inject constructor(
 
     override suspend fun setLiveTrafficEnabled(enabled: Boolean) {
         store.edit { it[Keys.LIVE_TRAFFIC] = enabled }
+    }
+
+    override suspend fun setSpeedCamerasEnabled(enabled: Boolean) {
+        store.edit { it[Keys.SPEED_CAMERAS] = enabled }
     }
 
     override suspend fun setTrafficSourceEnabled(sourceId: String, enabled: Boolean) {

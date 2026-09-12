@@ -15,4 +15,11 @@
     <string name="nav_recalc_failed_tts">Recalculation failed. Please stop and re-route.</string>
     <string name="nav_arrived_tts">You have arrived at your destination</string>
     <string name="nav_location_unavailable">GPS location is required for turn-by-turn navigation. Enable location to navigate.</string>
+    <string name="nav_camera_ahead_tts">Speed camera ahead.</string>
+    <string name="nav_camera_ahead_limit_tts">Speed camera ahead. Limit %1$d kilometres per hour.</string>
+    <string name="nav_camera_ahead">Speed camera ahead</string>
+    <string name="nav_camera_ahead_limit">Speed camera · limit %1$d km/h</string>
+    <string name="nav_acquiring_gps">Waiting for GPS fix…</string>
+    <string name="nav_gps_lost">GPS signal lost — check sky view</string>
+    <string name="nav_dismiss">Dismiss</string>
 </resources>

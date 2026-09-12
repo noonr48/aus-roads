@@ -96,7 +96,10 @@ fi
 [[ -n "$PACK_VERSION" ]] || PACK_VERSION="$(date -u +%Y-%m-%d)"
 
 GENERATED_AT="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
-OSM_EXTRACT_DATE="2026-05-31T20:21:36Z"   # informational; refreshed by the full build
+# Informational; the full build derives it from the PBF Last-Modified header.
+# Search-only rebuilds (reusing staged tiles/routing) pass the real extract
+# date via OSM_EXTRACT_DATE so the manifest never lies about provenance.
+OSM_EXTRACT_DATE="${OSM_EXTRACT_DATE:-2026-05-31T20:21:36Z}"
 
 SCHEMA_VERSION=1
 MIN_ZOOM=0
