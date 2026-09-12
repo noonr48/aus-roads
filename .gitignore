@@ -63,3 +63,6 @@ signing.properties
 **/signing.properties
 *.jks
 *.keystore
+
+# --- SLOANE harness ledger (agent-run oracle, not project source) ---
+.sloane/
