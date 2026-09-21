@@ -70,13 +70,31 @@ class SearchBarTest {
     }
 
     @Test
-    fun `result subtitles distinguish repeated names by coordinates`() {
-        val first = SearchResult("IGA", "poi", "shop", -34.9285, 138.6007)
-        val second = SearchResult("IGA", "poi", "shop", -34.9012, 138.6123)
+    fun `result subtitles use friendly metadata and distinguish repeated names by coordinates`() {
+        val first = SearchResult("IGA", "poi", "shop=supermarket", -34.9285, 138.6007)
+        val second = SearchResult("IGA", "poi", "shop=supermarket", -34.9012, 138.6123)
 
         assertThat(searchResultSubtitle(first)).isEqualTo(
-            "Poi \u00b7 shop \u00b7 34.9285\u00b0 S, 138.6007\u00b0 E",
+            "Supermarket \u00b7 34.9285\u00b0 S, 138.6007\u00b0 E",
         )
         assertThat(searchResultSubtitle(second)).isNotEqualTo(searchResultSubtitle(first))
+    }
+
+    @Test
+    fun `result subtitle omits missing class without leaving an empty separator`() {
+        val result = SearchResult("Main Street", "road", null, -34.9285, 138.6007)
+
+        assertThat(searchResultSubtitle(result)).isEqualTo(
+            "Road \u00b7 34.9285\u00b0 S, 138.6007\u00b0 E",
+        )
+    }
+
+    @Test
+    fun `result subtitle falls back to kind for non descriptive OSM class values`() {
+        val result = SearchResult("Local shop", "poi", "shop=yes", -34.9285, 138.6007)
+
+        assertThat(searchResultSubtitle(result)).isEqualTo(
+            "Point of interest \u00b7 34.9285\u00b0 S, 138.6007\u00b0 E",
+        )
     }
 }

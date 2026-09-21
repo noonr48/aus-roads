@@ -15,6 +15,59 @@ class LocationFixPolicyTest {
     }
 
     @Test
+    fun `approximate fix bridges Android coarse update cadence`() {
+        val tenMinutesAgo = 400_000L
+
+        assertThat(
+            isLocationFixFresh(
+                fixTimeMillis = tenMinutesAgo,
+                nowMillis = 1_000_000L,
+                maxAgeMillis = maximumLocationFixAgeMillis(isPreciseLocationGranted = false),
+            ),
+        ).isTrue()
+        assertThat(
+            isLocationFixFresh(
+                fixTimeMillis = tenMinutesAgo,
+                nowMillis = 1_000_000L,
+                maxAgeMillis = maximumLocationFixAgeMillis(isPreciseLocationGranted = true),
+            ),
+        ).isFalse()
+    }
+
+    @Test
+    fun `live approximate callback uses receipt time after freshness gate`() {
+        assertThat(
+            liveLocationDisplayTimeMillis(
+                fixTimeMillis = 400_000L,
+                receivedAtMillis = 1_000_000L,
+                isPreciseLocationGranted = false,
+            ),
+        ).isEqualTo(1_000_000L)
+    }
+
+    @Test
+    fun `live approximate callback still rejects an old source fix`() {
+        assertThat(
+            liveLocationDisplayTimeMillis(
+                fixTimeMillis = 99_999L,
+                receivedAtMillis = 1_000_000L,
+                isPreciseLocationGranted = false,
+            ),
+        ).isNull()
+    }
+
+    @Test
+    fun `live precise callback preserves its capture time`() {
+        assertThat(
+            liveLocationDisplayTimeMillis(
+                fixTimeMillis = 999_000L,
+                receivedAtMillis = 1_000_000L,
+                isPreciseLocationGranted = true,
+            ),
+        ).isEqualTo(999_000L)
+    }
+
+    @Test
     fun `fix before manual refresh is rejected`() {
         assertThat(
             isLocationFixFresh(

@@ -49,9 +49,11 @@ internal data class ForegroundLocationPermissionState(
 internal fun rememberForegroundLocationPermissionState(
     context: Context,
     onGranted: () -> Unit = {},
+    onDenied: () -> Unit = {},
 ): ForegroundLocationPermissionState {
     val lifecycleOwner = LocalLifecycleOwner.current
     val currentOnGranted by rememberUpdatedState(onGranted)
+    val currentOnDenied by rememberUpdatedState(onDenied)
     val isDeclared = remember(context) { context.isForegroundLocationDeclared() }
     val permissionPreferences = remember(context) {
         context.getSharedPreferences(PERMISSION_PREFERENCES, Context.MODE_PRIVATE)
@@ -91,7 +93,7 @@ internal fun rememberForegroundLocationPermissionState(
         isGranted = grants.hasForegroundLocationGrant() || context.hasForegroundLocationPermission()
         isPreciseGranted = grants.hasPreciseLocationGrant() || context.hasPreciseLocationPermission()
         refreshPermissionState()
-        if (isGranted) currentOnGranted()
+        if (isGranted) currentOnGranted() else currentOnDenied()
     }
 
     DisposableEffect(context, lifecycleOwner, isDeclared) {

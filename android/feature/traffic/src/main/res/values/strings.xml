@@ -1,5 +1,8 @@
 <?xml version="1.0" encoding="utf-8"?>
 <resources>
-    <string name="traffic_offline">Traffic: offline</string>
+    <string name="traffic_offline">Traffic unavailable</string>
+    <string name="traffic_retry">Retry</string>
+    <string name="traffic_invalid_credentials">%1$s traffic needs a valid API key. Check it in Settings.</string>
+    <string name="traffic_open_settings">Open traffic settings</string>
     <string name="traffic_event_count">%d events</string>
 </resources>

@@ -10,6 +10,8 @@ import androidx.compose.material.icons.filled.LocationOn
 import androidx.compose.material.icons.filled.NearMe
 import androidx.compose.material.icons.filled.Place
 import androidx.compose.material.icons.filled.Settings
+import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.padding
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
@@ -24,15 +26,21 @@ import androidx.navigation.compose.NavHost
 import androidx.navigation.compose.composable
 import androidx.compose.runtime.Composable
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.Alignment
+import androidx.compose.ui.unit.dp
 import au.com.ausroads.R
 import au.com.ausroads.routing.engine.RouteOptions
 import au.com.ausroads.ui.about.AboutScreen
 import au.com.ausroads.ui.map.MapScreen
 import au.com.ausroads.ui.map.RouteHistoryViewModel
+import au.com.ausroads.ui.map.RouteOptionsWriteRecovery
 import au.com.ausroads.ui.pins.PinListViewModel
+import au.com.ausroads.ui.pins.PinListUiState
 import au.com.ausroads.ui.pins.PinsScreen
 import au.com.ausroads.ui.settings.SettingsScreen
 import au.com.ausroads.ui.settings.SettingsViewModel
+import au.com.ausroads.ui.settings.SettingsField
+import au.com.ausroads.ui.settings.SettingsWriteErrorSnackbar
 import au.com.ausroads.ui.settings.MapPackViewModel
 import au.com.ausroads.feature.search.SearchViewModel
 import au.com.ausroads.feature.traffic.TrafficViewModel
@@ -87,6 +95,9 @@ fun AusRoadsNavHost(
     modifier: Modifier = Modifier,
 ) {
     var requestedMapTarget by remember { mutableStateOf<SearchResult?>(null) }
+    // Resolve this before NavHost supplies a destination owner so Map, Settings,
+    // and the activity theme share one write/error recovery stream.
+    val settingsViewModel: SettingsViewModel = hiltViewModel()
 
     NavHost(
         navController = navController,
@@ -98,7 +109,6 @@ fun AusRoadsNavHost(
     ) {
         composable(AusRoadsDestination.Map.route) {
             val pinsViewModel: PinListViewModel = hiltViewModel()
-            val settingsViewModel: SettingsViewModel = hiltViewModel()
             val searchViewModel: SearchViewModel = hiltViewModel()
             val trafficViewModel: TrafficViewModel = hiltViewModel()
             val navigationViewModel: NavigationViewModel = hiltViewModel()
@@ -106,7 +116,9 @@ fun AusRoadsNavHost(
             val routeViewModel: RouteViewModel = hiltViewModel()
             val mapPackViewModel: MapPackViewModel = hiltViewModel()
             val settings by settingsViewModel.settings.collectAsState()
-            val pins by pinsViewModel.pins.collectAsState()
+            val settingsWriteError by settingsViewModel.writeError.collectAsState()
+            val pinListState by pinsViewModel.uiState.collectAsState()
+            val pins = (pinListState as? PinListUiState.Content)?.pins.orEmpty()
             val installedPack by mapPackViewModel.renderInstalled.collectAsState()
             val installedStateInitialized by mapPackViewModel.renderStateInitialized.collectAsState()
             // Honour the TTS toggle: voice guidance previously spoke regardless.
@@ -123,46 +135,76 @@ fun AusRoadsNavHost(
             LaunchedEffect(routeAvoidOptions) {
                 routeViewModel.setOptions(routeAvoidOptions)
             }
-            MapScreen(
-                onOpenSettings = { navController.navigate(AusRoadsDestination.Settings.route) },
-                pins = pins,
-                // Named args: addPinAt(longitude, latitude, ...) — passing
-                // positionally here previously transposed every dropped pin.
-                onSavePin = { lat, lon, name, color, onSaved, onError ->
-                    pinsViewModel.addPinAt(
-                        latitude = lat,
-                        longitude = lon,
-                        name = name,
-                        color = color,
-                        onSaved = onSaved,
-                        onError = onError,
+            Box {
+                MapScreen(
+                    onOpenSettings = { navController.navigate(AusRoadsDestination.Settings.route) },
+                    pins = pins,
+                    // Named args: addPinAt(longitude, latitude, ...) — passing
+                    // positionally here previously transposed every dropped pin.
+                    onSavePin = { lat, lon, name, color, onSaved, onError ->
+                        pinsViewModel.addPinAt(
+                            latitude = lat,
+                            longitude = lon,
+                            name = name,
+                            color = color,
+                            onSaved = onSaved,
+                            onError = onError,
+                        )
+                    },
+                    onDeletePin = { pin, onDeleted, onError ->
+                        pinsViewModel.delete(
+                            pin = pin,
+                            onDeleted = onDeleted,
+                            onError = onError,
+                        )
+                    },
+                    reverseGeocode = { lat, lon -> searchViewModel.nearestPlaceName(lat, lon) },
+                    showAttribution = settings.showAttributionOverlay,
+                    searchViewModel = searchViewModel,
+                    trafficViewModel = trafficViewModel,
+                    trafficEnabled = settings.liveTrafficEnabled,
+                    navigationViewModel = navigationViewModel,
+                    routeHistoryViewModel = routeHistoryViewModel,
+                    routeViewModel = routeViewModel,
+                    routeAvoidOptions = routeAvoidOptions,
+                    onRouteAvoidOptionsChange = { opts ->
+                        settingsViewModel.setAvoidOptions(
+                            avoidTolls = opts.avoidTolls,
+                            avoidUnsealed = opts.avoidUnsealed,
+                            avoidFerries = opts.avoidFerries,
+                        )
+                    },
+                    routeOptionsWriteRecovery = settingsWriteError
+                        ?.takeIf { it.setting == SettingsField.RoutePreferences }
+                        ?.let { error ->
+                            RouteOptionsWriteRecovery(
+                                isRetrying = error.isRetrying,
+                                onRetry = settingsViewModel::retryFailedWrite,
+                                onDismiss = settingsViewModel::dismissWriteError,
+                            )
+                        },
+                    activePack = installedPack,
+                    packStateInitialized = installedStateInitialized,
+                    requestedMapTarget = requestedMapTarget,
+                    onRequestedMapTargetConsumed = { requestedMapTarget = null },
+                )
+                settingsWriteError?.let { error ->
+                    SettingsWriteErrorSnackbar(
+                        error = error,
+                        onRetry = settingsViewModel::retryFailedWrite,
+                        onDismiss = settingsViewModel::dismissWriteError,
+                        modifier = Modifier
+                            .align(Alignment.BottomCenter)
+                            .padding(16.dp),
                     )
-                },
-                onDeletePin = { pin -> pinsViewModel.delete(pin) },
-                reverseGeocode = { lat, lon -> searchViewModel.nearestPlaceName(lat, lon) },
-                showAttribution = settings.showAttributionOverlay,
-                searchViewModel = searchViewModel,
-                trafficViewModel = trafficViewModel,
-                trafficEnabled = settings.liveTrafficEnabled,
-                navigationViewModel = navigationViewModel,
-                routeHistoryViewModel = routeHistoryViewModel,
-                routeViewModel = routeViewModel,
-                routeAvoidOptions = routeAvoidOptions,
-                onRouteAvoidOptionsChange = { opts ->
-                    settingsViewModel.setAvoidOptions(
-                        avoidTolls = opts.avoidTolls,
-                        avoidUnsealed = opts.avoidUnsealed,
-                        avoidFerries = opts.avoidFerries,
-                    )
-                },
-                activePack = installedPack,
-                packStateInitialized = installedStateInitialized,
-                requestedMapTarget = requestedMapTarget,
-                onRequestedMapTargetConsumed = { requestedMapTarget = null },
-            )
+                }
+            }
         }
         composable(AusRoadsDestination.Nearby.route) {
             NearbyScreen(
+                onManageMapPack = {
+                    navController.navigate(AusRoadsDestination.Settings.route)
+                },
                 onViewOnMap = { result ->
                     requestedMapTarget = result
                     navController.navigate(AusRoadsDestination.Map.route) {
@@ -181,6 +223,7 @@ fun AusRoadsNavHost(
         composable(AusRoadsDestination.Settings.route) {
             SettingsScreen(
                 onOpenAbout = { navController.navigate(AusRoadsDestination.About.route) },
+                viewModel = settingsViewModel,
             )
         }
         composable(AusRoadsDestination.About.route) {

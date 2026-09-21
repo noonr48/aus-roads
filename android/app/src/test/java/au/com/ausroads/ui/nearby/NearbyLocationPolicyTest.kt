@@ -11,6 +11,7 @@ class NearbyLocationPolicyTest {
                 fixTimeMillis = 1_005_000L,
                 nowMillis = 1_006_000L,
                 minimumFixTimeMillis = 1_000_000L,
+                isPreciseLocationGranted = true,
             ),
         ).isTrue()
     }
@@ -22,6 +23,7 @@ class NearbyLocationPolicyTest {
                 fixTimeMillis = 700_000L,
                 nowMillis = 1_000_000L,
                 minimumFixTimeMillis = 0L,
+                isPreciseLocationGranted = true,
             ),
         ).isFalse()
     }
@@ -33,6 +35,43 @@ class NearbyLocationPolicyTest {
                 fixTimeMillis = 999_000L,
                 nowMillis = 1_001_000L,
                 minimumFixTimeMillis = 1_000_000L,
+                isPreciseLocationGranted = true,
+            ),
+        ).isFalse()
+    }
+
+    @Test
+    fun `coarse fix remains usable across approximate callback cadence`() {
+        assertThat(
+            isFreshNearbyFix(
+                fixTimeMillis = 400_000L,
+                nowMillis = 1_000_000L,
+                minimumFixTimeMillis = 0L,
+                isPreciseLocationGranted = false,
+            ),
+        ).isTrue()
+    }
+
+    @Test
+    fun `explicit refresh retains a still-fresh coarse fix`() {
+        assertThat(
+            isFreshNearbyFix(
+                fixTimeMillis = 999_000L,
+                nowMillis = 1_001_000L,
+                minimumFixTimeMillis = 1_000_000L,
+                isPreciseLocationGranted = false,
+            ),
+        ).isTrue()
+    }
+
+    @Test
+    fun `coarse fix beyond approximate freshness window is rejected`() {
+        assertThat(
+            isFreshNearbyFix(
+                fixTimeMillis = 99_999L,
+                nowMillis = 1_000_000L,
+                minimumFixTimeMillis = 0L,
+                isPreciseLocationGranted = false,
             ),
         ).isFalse()
     }

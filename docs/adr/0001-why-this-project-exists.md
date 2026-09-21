@@ -37,8 +37,11 @@ The two are architecturally separate. Live traffic is not baked into the map pac
 
 - The provider interface (`LiveTrafficProvider`) is the architectural pivot for the
   country-take-over. New states are new provider modules; the app code is unchanged.
-- v0.1 is offline-only. The "no INTERNET" / "no location" posture is part of the
-  brand promise. CI enforces it.
+- v0.1 was offline-only. Its "no INTERNET" posture remains part of the brand
+  promise. The original "no location" milestone constraint is superseded by
+  [ADR 0008](./0008-opt-in-foreground-location.md), which permits explicit,
+  foreground-only location in both flavors without weakening the offline flavor's
+  no-`INTERNET` boundary.
 - v0.5+ requires a small backend for community reports. This is deferred until v0.4
   is shipped.
 - All trademarks and data sources are attributed in-app.

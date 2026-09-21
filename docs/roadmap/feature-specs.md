@@ -11,7 +11,11 @@ Feasibility verdicts (defined in `valhalla-capabilities.md` / `data-pipeline.md`
 
 Grouping below is **by phase** (when the core lands), per the 5-phase plan in `00-overview.md`. Package root throughout: `au.com.ausroads`.
 
-> **Reminder for every spec:** `offline` flavor has no `INTERNET`/`LOCATION`. Where a feature needs GPS/SMS it targets `withNetwork`; the spec states the offline degradation. CI proves logic; the on-device checklist proves the feature.
+> **Reminder for every spec:** `offline` has no `INTERNET`, but both flavors
+> declare opt-in coarse/fine **foreground** location (ADR 0008). Every feature must
+> retain a useful denial/no-fix path. A long-running or screen-off location service
+> is a separate capability review and must not be inferred from the foreground
+> grant. CI proves logic; the on-device checklist proves the feature.
 
 ---
 
@@ -27,7 +31,10 @@ P1 lands the `core:geo` math, the `data:tracks` model, the routing-options model
 
 **User story.** Driving the Oodnadatta Track with no signal, I start recording. The app logs my path the whole way. Back at camp I export the day as a `.gpx` to share or archive; next trip I import a mate's `.gpx` route and see it on the map — all offline.
 
-**Offline / data dependency.** Fully offline. Recording needs GPS (`withNetwork`). GPX import/export and rendering an imported track need **no** permission and work on the `offline` flavor. No pack dependency.
+**Offline / data dependency.** Fully offline. GPX import/export and rendering need
+no permission and work in `offline`. Both flavors can obtain an opt-in foreground
+fix; the planned long-running recorder service is currently scoped to
+`withNetwork` and requires its own lifecycle/policy review. No pack dependency.
 
 **Feasibility.** buildable-now. GPX 1.1 is a pure-Kotlin codec; `data:tracks` is standard Room; the recorder is a sampling state machine.
 
@@ -80,7 +87,9 @@ Sampling rule: append a point when moved ≥ N m **or** ≥ T s since last, whic
 - [ ] Multi-hour recording: no memory growth, no DB lock; survives process death (recovers in-progress track).
 - [ ] Export writes to scoped storage; the file opens in OsmAnd / a GPX viewer.
 - [ ] Import via Storage Access Framework renders correctly.
-- [ ] `offline` flavor: import/export/render works with no permissions; recording UI is absent (no GPS).
+- [ ] `offline` flavor: import/export/render works without a grant; the user marker
+      and other foreground location flows remain available independently of whether
+      the long-running recorder service is shipped there.
 
 **Risk.** Background-location throttling differs per OEM (Doze). GPX in the wild is messy — the parser must be defensive (covered by fixtures). Storage-permission UX on modern Android.
 
@@ -92,7 +101,11 @@ Sampling rule: append a point when moved ≥ N m **or** ≥ T s since last, whic
 
 **User story.** Before leaving phone coverage I tell my partner "I'll be at William Creek by 5pm." The app composes an SMS with my plan and a check-in time. If I haven't checked in by 5pm (and I'm momentarily in a coverage pocket), it sends an "overdue" SMS with my last known coordinates so someone knows where to look.
 
-**Offline / data dependency.** Designed for the no-signal case: it **composes** offline and **queues**; the SMS leaves when the device next has cell signal (standard carrier behaviour). Needs `SEND_SMS` + GPS → `withNetwork`. The `offline` flavor offers compose-to-share-sheet only (no auto-send). No pack dependency.
+**Offline / data dependency.** Designed for the no-signal case: it **composes**
+offline and **queues**; the SMS leaves when the device next has cell signal
+(standard carrier behaviour). Both flavors can obtain an opt-in foreground fix,
+but `SEND_SMS`/automatic dispatch is scoped to `withNetwork`. The `offline` flavor
+offers compose-to-share-sheet only (no auto-send). No pack dependency.
 
 **Feasibility.** buildable-now.
 
@@ -272,7 +285,10 @@ enum class FavKind { HOME, WORK, NAMED }
 
 **User story.** Crossing the Nullarbor I want a dash readout: how long I've actually been moving, average and top speed, distance today, and — critically — **how much daylight is left** so I can make camp before dark. Offline.
 
-**Offline / data dependency.** Fully offline. Needs GPS for live speed (`withNetwork`); daylight is pure astronomy (works on `offline` given a position + clock). No pack change.
+**Offline / data dependency.** Fully offline. Live speed can use the accepted
+foreground location grant in either flavor while the HUD is active; any screen-off
+trip service needs a separate review. Daylight is pure astronomy and also works
+from a chosen map point plus the clock. No pack change.
 
 **Feasibility.** buildable-now. `SunCalc` is pure Kotlin.
 
@@ -323,7 +339,11 @@ Moving vs stopped: speed below a threshold (e.g. < 1 m/s) accrues stopped time, 
 
 **User story.** Someone's hurt 200 km from the nearest town, no signal. I open the emergency card: it shows my position in lat/lon **and** MGRS (what emergency services and the military use), the nearest hospital and police station with distance/bearing, and the local UHF channel convention. I read the MGRS grid over the radio.
 
-**Offline / data dependency.** Fully offline — this is the whole point. Coordinates need a position (GPS on `withNetwork`, or a tapped map point on `offline`). Nearest hospital/police come from `search.db` (`class IN ('hospital','police')`), which already covers SA (hospitals ×92; police present). No pack change.
+**Offline / data dependency.** Fully offline — this is the whole point. In either
+flavor, coordinates can use an opt-in foreground device fix or a tapped map point;
+denial/no-fix must never block the manual path. Nearest hospital/police come from
+`search.db` (`class IN ('hospital','police')`), which already covers SA (hospitals
+×92; police present). No pack change.
 
 **Feasibility.** buildable-now. MGRS/UTM conversion lives in `core:geo`; the nearest queries reuse `FtsSearchRepository.nearest(...)`.
 
@@ -372,7 +392,10 @@ suspend fun SearchRepository.nearestByClass(lat: Double, lon: Double, cls: Strin
 
 **User story.** I drop pins on the turnoff to a station gate and a fuel stop. As I approach within my set radius, the app alerts me — so I don't blow past an unmarked turn at 110 km/h. Offline.
 
-**Offline / data dependency.** Fully offline. Needs GPS (`withNetwork`). Pins are the existing local store. No pack change. (Reuses pins, not OS geofencing APIs — those can require network/Play services; we do it on-device.)
+**Offline / data dependency.** Fully offline. Both flavors have foreground location,
+but the continuous/screen-off alert service is currently scoped to `withNetwork`
+and requires a separate lifecycle/policy review. Pins are the existing local store.
+No pack change. (Reuses pins, not OS geofencing APIs; distance math stays on-device.)
 
 **Feasibility.** buildable-now.
 
@@ -537,7 +560,11 @@ P2 wires the P1 logic to real Android: foreground services, sensors, SMS/alarms,
 
 **User story.** Off the grid I want a heading compass and current altitude on a big, glanceable HUD, plus a simplified "driving mode" screen (large speed, next turn, minimal chrome) for long remote legs.
 
-**Offline / data dependency.** Fully offline. Compass = magnetometer; altitude = barometer or GPS altitude; heading from GPS course. Needs sensors (and GPS for course → `withNetwork`); no dangerous permission, no pack change. (Route-derived elevation profiles are a **P4** lib-bump item; this feature uses *device* sensors only.)
+**Offline / data dependency.** Fully offline. Compass = magnetometer; altitude =
+barometer or GPS altitude; heading from GPS course. Sensors work without a dangerous
+permission, and either flavor can use the opt-in foreground location grant for
+course/altitude while the HUD is active. No pack change. (Route-derived elevation
+profiles are a **P4** lib-bump item; this feature uses *device* sensors only.)
 
 **Feasibility.** buildable-now. (P2 — sensor + UI; little pure logic.)
 
@@ -583,7 +610,12 @@ P3 adds data to the pack so the P1/P2 monitors get real inputs. **No Valhalla ch
 
 **User story.** On a remote highway I drift over the limit without realising. The app knows the posted limit and warns me (a subtle chime / visual) when I exceed it by my chosen margin — offline.
 
-**Offline / data dependency.** Fully offline. Alert needs GPS speed (`withNetwork`). **Limit data** needs the pipeline addition: an osmium pass emitting a road→`maxspeed` table **into `search.db`** (no manifest schema bump if kept inside `search.db` — `data-pipeline.md` §1). Until then the monitor runs against a user-set default or is dormant.
+**Offline / data dependency.** Fully offline. While its navigation/HUD surface is
+foreground, the alert can use the accepted location grant in either flavor.
+**Limit data** needs the pipeline addition: an osmium pass emitting a
+road→`maxspeed` table **into `search.db`** (no manifest schema bump if kept inside
+`search.db` — `data-pipeline.md` §1). Until then the monitor runs against a user-set
+default or is dormant.
 
 **Feasibility.** **needs-data** for limits; **buildable-now** for the alert. (Speed limit is **not** in the route response and `trace_attributes` is unbridged — `valhalla-capabilities.md` §3.)
 

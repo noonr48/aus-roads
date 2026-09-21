@@ -23,9 +23,11 @@ aus-roads is a privacy-focused offline map application for South Australia (with
 
 **Privacy:**
 • No internet permission (offline flavor)
-• No location tracking (until you start navigation)
+• Foreground location is optional; approximate access supports Map and Nearby
+• Precise location is needed only when you start live turn-by-turn navigation
+• No saved location history or background location
 • No analytics, no ads, no accounts
-• All data stored locally on your device
+• Core maps, pins, routes, and location fixes stay on your device
 • Open source (AGPL-3.0)
 
 **Data sources:**

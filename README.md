@@ -52,16 +52,25 @@ Requires JDK 17+ and Android SDK with `compileSdk = 35`.
 ```bash
 cd android
 ./gradlew assembleDebug          # debug build
-./gradlew assembleRelease        # release build (requires signing config)
+./gradlew assembleRelease        # release APKs (unsigned without signing config)
 ./gradlew test                   # run all unit tests
-./gradlew connectedAndroidTest   # instrumented tests (requires device/emulator)
+./gradlew -Pausroads.includeX86_64=true \
+  :app:connectedOfflineDebugAndroidTest \
+  :app:connectedWithNetworkDebugAndroidTest \
+  :offline:search:connectedDebugAndroidTest
+                                # all instrumented suites on an x86_64 emulator
 ```
+
+`x86_64` is an emulator-only opt-in. Omit `ausroads.includeX86_64` from
+release/shipping builds; production artifacts contain `arm64-v8a` only.
 
 The first build will download Gradle 8.10.2 and the AGP/Kotlin dependencies. Expect a 5-10 minute cold build on a developer laptop.
 
 ### Release signing
 
-See `docs/notes/release-signing.md` for keystore setup and Play Store signing configuration. Release builds produce an AAB (Android App Bundle) for Play Store distribution.
+See `docs/notes/release-signing.md` for keystore setup and Play Store signing
+configuration. `assembleWithNetworkRelease` produces an APK;
+`bundleWithNetworkRelease` produces an AAB for Play Store distribution.
 
 ### Build flavors
 
@@ -81,9 +90,20 @@ See `docs/notes/release-signing.md` for keystore setup and Play Store signing co
 
 aus-roads is built around a single privacy promise: **the app does not track you**.
 
-v0.1 is offline-only by design. The app makes no network calls after the first-time map pack download, and that download is initiated by the user (not automatic). No analytics, no crash reporting, no ads, no accounts, no background location.
+The `offline` flavor has no `INTERNET` permission. Foreground location is optional:
+the app, map browsing, search, pins, and route planning remain usable without a
+grant. Approximate location supports the user marker, recentering, and Nearby in
+both flavors. Precise location is required only when the user starts active live
+turn-by-turn navigation.
 
-As of v1.0, navigation requires `ACCESS_FINE_LOCATION` (opt-in), and live congestion data is fetched via the TomTom API (requires API key). Navigation GPS data is processed in-memory only and never persisted. TTS voice prompts use the Android built-in engine with no external data transmission. Route history is local-only. Widget shows static content with no network access.
+When only approximate location is granted, the route sheet explains that live
+turn-by-turn directions need precise location and offers **Enable precise
+location**. If Android has blocked another prompt, it offers **Open location
+settings** instead. Location fixes are processed in memory only and never
+persisted, and no background location permission is declared. There is no
+analytics, crash reporting, advertising, or account. Live congestion uses the
+TomTom API only when configured with an API key; TTS uses Android's built-in
+engine. Route history remains local and the widget makes no network request.
 
 The full privacy statement is in `docs/notes/privacy.md` and is also linked from the in-app Settings → About screen.
 

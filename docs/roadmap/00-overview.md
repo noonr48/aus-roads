@@ -43,10 +43,12 @@ The product already ships (v1.0): offline vector map + search + pins, Valhalla o
 
 | Flavor | Permissions | Meaning for new features |
 |--------|-------------|--------------------------|
-| `offline` | **No** `INTERNET`, **no** `LOCATION` | Hardest constraint. Pure-data and pure-logic features (coordinates, measure, GPX import, POI browse, fuel *planner* math) must run here. Anything needing GPS or SMS degrades gracefully or is hidden. |
-| `withNetwork` | `LOCATION` (GPS) + `INTERNET` (live traffic) | Adds the GPS-driven features (track recording, speed alert, trip computer, geofence, share-my-location) and live traffic. INTERNET is for traffic only — never for core map/route/search. |
+| `offline` | **No** `INTERNET`; opt-in coarse/fine **foreground** location; no background location | Hardest network constraint. Map, search, routing, pins, the user marker, and Nearby remain on-device. Manual/map-centre/Adelaide fallbacks keep core flows usable without a grant or usable fix. |
+| `withNetwork` | The same opt-in foreground location + `INTERNET` (downloads/live data); no background location | Adds separately disclosed network features. A location grant does not enable analytics, location history, or background uploads. |
 
-A feature spec must state which flavor(s) it targets and how it behaves in the more restricted one.
+A feature spec must state which flavor(s) it targets, whether it needs only the
+accepted foreground permission or a separately reviewed long-running service, and
+how it behaves without a grant. See ADR 0008.
 
 ## 4. The 5-Phase Plan
 
@@ -159,7 +161,8 @@ The dependency rule stays: `feature:*` → `data:*` / `routing:*` / `offline:*` 
 
 - `./gradlew :module:test` green for every touched module (JVM unit tests).
 - `./gradlew detekt` clean (zero new findings; the repo is detekt-clean today).
-- Compile across both flavors (`offline`, `withNetwork`) — a feature must not break the no-`INTERNET`/no-`LOCATION` build.
+- Compile across both flavors (`offline`, `withNetwork`) — a feature must not break
+  the `offline` no-`INTERNET` boundary or introduce background location.
 - `code-reviewer` pass on substantial diffs (reviewer ≠ author; findings cite evidence).
 - `tools/privacy-audit` clean — no new permission or network call sneaks in unaudited.
 

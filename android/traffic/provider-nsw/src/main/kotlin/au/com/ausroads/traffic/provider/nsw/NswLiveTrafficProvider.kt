@@ -11,6 +11,7 @@ import au.com.ausroads.traffic.provider.LiveTrafficProvider
 import au.com.ausroads.traffic.provider.Severity
 import au.com.ausroads.traffic.provider.SourceType
 import au.com.ausroads.traffic.provider.TrafficGeometry
+import au.com.ausroads.traffic.provider.requireSuccessfulTrafficResponse
 import io.ktor.client.HttpClient
 import io.ktor.client.call.body
 import io.ktor.client.engine.okhttp.OkHttp
@@ -20,7 +21,6 @@ import io.ktor.client.request.header
 import io.ktor.client.statement.HttpResponse
 import io.ktor.http.HttpHeaders
 import io.ktor.http.HttpStatusCode
-import io.ktor.http.isSuccess
 import io.ktor.serialization.kotlinx.json.json
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.first
@@ -134,20 +134,14 @@ class NswLiveTrafficProvider @Inject constructor(
                 cacheMaxAge = 5.minutes,
                 etag = response.headers[HttpHeaders.ETag],
                 lastModified = response.headers[HttpHeaders.LastModified],
+                notModified = true,
             )
         }
 
-        // A non-success status (401 missing/bad key, 5xx, …) is not a JSON
-        // FeatureCollection — degrade to an empty result instead of throwing.
-        if (!response.status.isSuccess()) {
-            return FetchResult(
-                events = emptyList(),
-                serverTimestamp = Clock.System.now(),
-                cacheMaxAge = 5.minutes,
-                etag = response.headers[HttpHeaders.ETag],
-                lastModified = response.headers[HttpHeaders.LastModified],
-            )
-        }
+        // Preserve the distinction between an invalid credential and a transient
+        // upstream failure. The typed exception is sanitized and lets consumers
+        // retain the last good provider snapshot instead of replacing it with empty.
+        requireSuccessfulTrafficResponse(regionCode, response.status.value)
 
         val json = response.body<JsonObject>()
         val features = json["features"]?.jsonArray ?: JsonArray(emptyList())

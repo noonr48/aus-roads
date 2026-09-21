@@ -103,8 +103,27 @@ class NearbyViewModelTest {
         val state = viewModel.uiState.value
         assertThat(state.results).isEmpty()
         assertThat(state.isLoading).isFalse()
-        assertThat(state.searchUnavailable).isTrue()
+        assertThat(state.categoryError).isTrue()
+        assertThat(state.searchUnavailable).isFalse()
     }
+
+    @Test
+    fun `failed category query can be retried without changing selection`() =
+        runTest(testDispatcher) {
+            repository.throwOnNearest = true
+            viewModel.selectCategory(PoiCategory.FUEL)
+            advanceUntilIdle()
+            assertThat(viewModel.uiState.value.categoryError).isTrue()
+
+            repository.throwOnNearest = false
+            repository.byCategory[PoiCategory.FUEL] = listOf(fuel("Recovered Servo", 0.01))
+            viewModel.selectCategory(PoiCategory.FUEL)
+            advanceUntilIdle()
+
+            val state = viewModel.uiState.value
+            assertThat(state.categoryError).isFalse()
+            assertThat(state.results.map { it.result.name }).containsExactly("Recovered Servo")
+        }
 
     @Test
     fun `emergency info is loaded from init`() = runTest(testDispatcher) {
@@ -122,6 +141,28 @@ class NearbyViewModelTest {
         assertThat(emergency!!.hospital?.result?.name).isEqualTo("Royal Adelaide Hospital")
         assertThat(emergency.police?.result?.name).isEqualTo("Adelaide Police Station")
         assertThat(emergency.hospital!!.distanceMeters).isGreaterThan(0.0)
+        assertThat(viewModel.uiState.value.isEmergencyLoading).isFalse()
+        assertThat(viewModel.uiState.value.emergencyError).isFalse()
+    }
+
+    @Test
+    fun `emergency failure is explicit and retry recovers`() = runTest(testDispatcher) {
+        repository.throwOnNearest = true
+        viewModel = NearbyViewModel(repository).apply { workDispatcher = testDispatcher }
+        advanceUntilIdle()
+
+        assertThat(viewModel.uiState.value.emergencyError).isTrue()
+        assertThat(viewModel.uiState.value.isEmergencyLoading).isFalse()
+
+        repository.throwOnNearest = false
+        repository.byCategory[PoiCategory.HOSPITAL] =
+            listOf(fuel("Recovered Hospital", lonOffset = 0.02))
+        viewModel.loadEmergency()
+        advanceUntilIdle()
+
+        assertThat(viewModel.uiState.value.emergencyError).isFalse()
+        assertThat(viewModel.uiState.value.emergency?.hospital?.result?.name)
+            .isEqualTo("Recovered Hospital")
     }
 
     @Test

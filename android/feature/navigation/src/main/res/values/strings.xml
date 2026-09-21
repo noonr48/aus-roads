@@ -1,10 +1,10 @@
 <?xml version="1.0" encoding="utf-8"?>
 <resources>
-    <string name="nav_stop">Stop Navigation</string>
+    <string name="nav_stop">Stop navigation</string>
     <string name="nav_maneuver_progress">%1$d of %2$d</string>
-    <string name="nav_start">Start Navigation</string>
+    <string name="nav_start">Start navigation</string>
     <string name="nav_continue">Continue</string>
-    <string name="nav_end">End</string>
+    <string name="nav_end">End navigation</string>
     <string name="nav_arrived">You have arrived</string>
     <string name="nav_done">Done</string>
     <string name="nav_battery_warning">Battery low — consider stopping navigation</string>
@@ -12,7 +12,9 @@
     <string name="nav_recalculating">Off route — recalculating…</string>
     <string name="nav_recalculating_tts">Off route. Recalculating.</string>
     <string name="nav_recalculated_tts">Route recalculated.</string>
-    <string name="nav_recalc_failed_tts">Recalculation failed. Please stop and re-route.</string>
+    <string name="nav_recalc_failed">Couldn’t update route. Previous guidance is still shown — check the road ahead.</string>
+    <string name="nav_recalc_failed_tts">Route update failed. Retry the route or end navigation.</string>
+    <string name="nav_retry_route">Retry route</string>
     <string name="nav_precise_location_required">Precise location is required for live turn-by-turn navigation.</string>
     <string name="nav_location_unavailable">Current location is unavailable. Turn on Location, then retry.</string>
     <string name="nav_retry_location">Retry location</string>

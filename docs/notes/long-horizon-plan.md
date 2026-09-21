@@ -345,12 +345,13 @@ for additional states.
 
 ### Privacy Implications
 
-- GPS-based region detection requires `ACCESS_COARSE_LOCATION` permission.
-  This is the first version that requests a location permission.
-- Permission is opt-in. Default: manual region selection.
-- GPS is used only for region detection, not continuous tracking.
+- GPS-based region detection reuses the opt-in foreground coarse/fine permission
+  pair accepted in ADR 0008; it does not introduce a new permission class.
+- Default: manual region selection. Denial keeps that path fully usable.
+- A region check is foreground-only and ephemeral, not continuous tracking.
 - Location is not transmitted to any server.
-- Privacy statement must be updated to disclose location permission use.
+- The privacy statement already discloses foreground location use; region detection
+  must be added to its purpose list before shipping.
 
 ### Testing Strategy
 
@@ -748,13 +749,9 @@ legal compliance, and release infrastructure are in place.
 
 | Version | Permissions | Purpose |
 |---------|-------------|---------|
-| v0.1–v0.2 | `INTERNET` (traffic only) | Traffic SA polling |
-| v0.3 | `INTERNET` | DIT outback warnings |
-| v0.4 | `INTERNET` | No change |
-| v0.5 | `INTERNET` | Community reports (opt-in) |
-| v0.6 | `INTERNET` + `ACCESS_COARSE_LOCATION` (opt-in) | Region auto-detection |
-| v0.7 | `INTERNET` + `ACCESS_FINE_LOCATION` (opt-in) | Navigation + speed crowdsourcing |
-| v0.8–v1.0 | Same as v0.7 | No new permissions |
+| Current `offline` baseline (ADR 0008) | `ACCESS_COARSE_LOCATION` + `ACCESS_FINE_LOCATION` (opt-in foreground); no `INTERNET`; no background location | User marker, Nearby, navigation; all fixes on-device and ephemeral |
+| Current `withNetwork` baseline (ADR 0008) | Same foreground pair + `INTERNET` | The same location UX plus separately disclosed downloads/live data |
+| Any future continuous/screen-off feature | Not pre-authorized | Requires a separate manifest, lifecycle, Play-policy, privacy, and battery review |
 
 ### Pack Size Budget
 
@@ -803,6 +800,6 @@ legal compliance, and release infrastructure are in place.
 | ~~DIT scraper before Valhalla~~ | **Superseded.** DIT endpoint was already live at `maps.sa.gov.au/.../FNRR2/MapServer`. No serverless scraper needed. |
 | Community reports before multi-state | Community reports require a backend. Build it once, reuse for all states. |
 | TomTom for congestion, not HERE | TomTom has better AU coverage. HERE is stronger in EU. |
-| Opt-in GPS from v0.6, not earlier | Delay the privacy cost until multi-state makes it valuable. |
+| ~~Opt-in GPS from v0.6, not earlier~~ | **Superseded by ADR 0008.** Foreground location now supports the user marker, Nearby, and navigation in both flavors; `offline` still has no `INTERNET`. |
 | Android Auto in v0.9, not earlier | Auto requires Google Play Services. Delay until the core app is solid. |
 | Play Store in v1.0, not earlier | Play Store adds compliance burden. Ship sideloaded APKs until the app is feature-complete. |

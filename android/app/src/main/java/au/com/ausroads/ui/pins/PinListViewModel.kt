@@ -1,9 +1,9 @@
 /*
  * PinListViewModel — v0.1.1.
  *
- * Drives the Pins screen. Exposes a hot StateFlow of all saved pins and a small
- * set of write operations (add / rename / delete) that the UI and the
- * MapScreen long-press handler can call.
+ * Drives the Pins screen. Exposes explicit loading, content, and read-error
+ * states plus write operations (add / rename / delete) used by the UI and the
+ * MapScreen long-press handler.
  *
  * Dependencies: PinRepository / Pin from the :data:pins module, injected via Hilt.
  */
@@ -17,23 +17,54 @@ import au.com.ausroads.data.pins.PinRepository
 import dagger.hilt.android.lifecycle.HiltViewModel
 import javax.inject.Inject
 import kotlinx.coroutines.CancellationException
-import kotlinx.coroutines.flow.SharingStarted
+import kotlinx.coroutines.Job
+import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
-import kotlinx.coroutines.flow.stateIn
+import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.launch
 import kotlinx.datetime.Clock
+
+sealed interface PinListUiState {
+    data object Loading : PinListUiState
+    data class Content(val pins: List<Pin>) : PinListUiState
+    data object ReadError : PinListUiState
+}
 
 @HiltViewModel
 class PinListViewModel @Inject constructor(
     private val pinRepository: PinRepository,
 ) : ViewModel() {
 
-    val pins: StateFlow<List<Pin>> = pinRepository.observeAll()
-        .stateIn(
-            scope = viewModelScope,
-            started = SharingStarted.WhileSubscribed(5_000),
-            initialValue = emptyList(),
-        )
+    private val _uiState = MutableStateFlow<PinListUiState>(PinListUiState.Loading)
+    val uiState: StateFlow<PinListUiState> = _uiState.asStateFlow()
+
+    private var observationJob: Job? = null
+
+    init {
+        subscribeToPins()
+    }
+
+    fun retrySavedPins() {
+        subscribeToPins()
+    }
+
+    @Suppress("TooGenericExceptionCaught") // Room can surface several read failures
+    private fun subscribeToPins() {
+        observationJob?.cancel()
+        observationJob = viewModelScope.launch {
+            _uiState.value = PinListUiState.Loading
+            try {
+                pinRepository.observeAll().collect { pins ->
+                    _uiState.value = PinListUiState.Content(pins)
+                }
+            } catch (error: CancellationException) {
+                throw error
+            } catch (error: Exception) {
+                Log.e(TAG, "Failed to load saved pins", error)
+                _uiState.value = PinListUiState.ReadError
+            }
+        }
+    }
 
     /**
      * Add a pin at the given coordinates. The future MapScreen will call this
@@ -52,6 +83,9 @@ class PinListViewModel @Inject constructor(
     ) {
         viewModelScope.launch {
             try {
+                require(areValidPinCoordinates(latitude, longitude)) {
+                    "Pin coordinates are outside world bounds"
+                }
                 val pin = Pin(
                     name = name?.takeIf { it.isNotBlank() } ?: defaultName(latitude, longitude),
                     lat = latitude,
@@ -70,16 +104,48 @@ class PinListViewModel @Inject constructor(
         }
     }
 
-    fun updatePin(pin: Pin, newName: String, newColor: String) {
-        if (newName.isBlank()) return
+    @Suppress("TooGenericExceptionCaught") // Room can surface several write failures
+    fun updatePin(
+        pin: Pin,
+        newName: String,
+        newColor: String,
+        onUpdated: (() -> Unit)? = null,
+        onError: ((Throwable) -> Unit)? = null,
+    ) {
         viewModelScope.launch {
-            pinRepository.update(pin.copy(name = newName, color = newColor))
+            try {
+                require(newName.isNotBlank()) { "Pin name cannot be blank" }
+                check(pinRepository.update(pin.copy(name = newName, color = newColor)) == 1) {
+                    "Saved pin no longer exists"
+                }
+            } catch (error: CancellationException) {
+                throw error
+            } catch (error: Exception) {
+                Log.e(TAG, "Failed to update saved pin", error)
+                onError?.invoke(error)
+                return@launch
+            }
+            onUpdated?.invoke()
         }
     }
 
-    fun delete(pin: Pin) {
+    @Suppress("TooGenericExceptionCaught") // Room can surface several write failures
+    fun delete(
+        pin: Pin,
+        onDeleted: (() -> Unit)? = null,
+        onError: ((Throwable) -> Unit)? = null,
+    ) {
         viewModelScope.launch {
-            pinRepository.delete(pin)
+            try {
+                check(pinRepository.delete(pin) == 1) { "Saved pin no longer exists" }
+            } catch (error: CancellationException) {
+                throw error
+            } catch (error: Exception) {
+                Log.e(TAG, "Failed to delete saved pin", error)
+                onError?.invoke(error)
+                return@launch
+            }
+            onDeleted?.invoke()
         }
     }
 

@@ -8,6 +8,26 @@ import com.google.common.truth.Truth.assertThat
 class TrafficOverlayTest {
 
     @Test
+    fun `NSW credential failure presents settings recovery with a friendly region name`() {
+        val presentation = TrafficFailure.InvalidCredentials("AU-NSW").presentation()
+
+        assertThat(presentation.messageRes).isEqualTo(R.string.traffic_invalid_credentials)
+        assertThat(presentation.regionLabel).isEqualTo("NSW")
+        assertThat(presentation.actionRes).isEqualTo(R.string.traffic_open_settings)
+        assertThat(presentation.recovery).isEqualTo(TrafficRecovery.OPEN_SETTINGS)
+    }
+
+    @Test
+    fun `generic provider failure keeps retry recovery`() {
+        val presentation = TrafficFailure.AllProvidersUnavailable.presentation()
+
+        assertThat(presentation.messageRes).isEqualTo(R.string.traffic_offline)
+        assertThat(presentation.regionLabel).isNull()
+        assertThat(presentation.actionRes).isEqualTo(R.string.traffic_retry)
+        assertThat(presentation.recovery).isEqualTo(TrafficRecovery.RETRY)
+    }
+
+    @Test
     fun `severityColor returns green for LOW`() {
         val color = severityColor(Severity.LOW)
         assertThat(color).isEqualTo(Color(0xFF4CAF50))

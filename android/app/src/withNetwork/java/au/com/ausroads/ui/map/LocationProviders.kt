@@ -16,6 +16,7 @@ import android.os.Handler
 import android.os.Looper
 import android.util.Log
 import androidx.compose.material3.SnackbarHostState
+import androidx.compose.material3.SnackbarResult
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.State
@@ -75,15 +76,42 @@ internal fun rememberUserLocation(hasPermission: Boolean): State<Location?> {
             currentLocationCancellation?.cancel()
             currentLocationCancellation = null
         }
-        fun publishIfFresh(fix: Location?) {
+        fun publishIfFresh(
+            fix: Location?,
+            isLiveCallback: Boolean,
+        ) {
             if (!isStarted || fix == null) return
+            val receivedAtMillis = System.currentTimeMillis()
+            val isPreciseLocationGranted = context.hasPreciseLocationPermission()
+            val maxAgeMillis = maximumLocationFixAgeMillis(isPreciseLocationGranted)
+            val displayTimeMillis = if (isLiveCallback) {
+                liveLocationDisplayTimeMillis(
+                    fixTimeMillis = fix.time,
+                    receivedAtMillis = receivedAtMillis,
+                    isPreciseLocationGranted = isPreciseLocationGranted,
+                )
+            } else {
+                fix.time.takeIf {
+                    isLocationFixFresh(
+                        fixTimeMillis = it,
+                        nowMillis = receivedAtMillis,
+                        maxAgeMillis = maxAgeMillis,
+                    )
+                }
+            } ?: return
+            val displayFix = if (displayTimeMillis == fix.time) {
+                fix
+            } else {
+                Location(fix).apply { time = displayTimeMillis }
+            }
             val delayMillis = remainingLocationFreshnessMillis(
-                fixTimeMillis = fix.time,
-                nowMillis = System.currentTimeMillis(),
+                fixTimeMillis = displayFix.time,
+                nowMillis = receivedAtMillis,
+                maxAgeMillis = maxAgeMillis,
             ) ?: return
             handler.removeCallbacks(clearExpiredFix)
-            location.value = fix
-            expiringFixTimeMillis = fix.time
+            location.value = displayFix
+            expiringFixTimeMillis = displayFix.time
             handler.postDelayed(clearExpiredFix, delayMillis)
         }
         val request = LocationRequest.Builder(Priority.PRIORITY_HIGH_ACCURACY, 2000L)
@@ -93,7 +121,7 @@ internal fun rememberUserLocation(hasPermission: Boolean): State<Location?> {
             override fun onLocationResult(result: LocationResult) {
                 result.lastLocation?.let {
                     Log.d(TAG, "location update (acc ${it.accuracy}m)")
-                    publishIfFresh(it)
+                    publishIfFresh(it, isLiveCallback = true)
                 }
             }
         }
@@ -111,9 +139,18 @@ internal fun rememberUserLocation(hasPermission: Boolean): State<Location?> {
                 client.lastLocation
                     .addOnSuccessListener { loc ->
                         if (loc != null) {
-                            if (isLocationFixFresh(loc.time, System.currentTimeMillis())) {
+                            val maxAgeMillis = maximumLocationFixAgeMillis(
+                                context.hasPreciseLocationPermission(),
+                            )
+                            if (
+                                isLocationFixFresh(
+                                    fixTimeMillis = loc.time,
+                                    nowMillis = System.currentTimeMillis(),
+                                    maxAgeMillis = maxAgeMillis,
+                                )
+                            ) {
                                 Log.d(TAG, "lastLocation accepted (acc ${loc.accuracy}m)")
-                                publishIfFresh(loc)
+                                publishIfFresh(loc, isLiveCallback = false)
                             } else {
                                 Log.i(TAG, "lastLocation was stale; waiting for a fresh fix")
                             }
@@ -134,7 +171,7 @@ internal fun rememberUserLocation(hasPermission: Boolean): State<Location?> {
                         currentLocationCancellation = null
                         if (loc != null) {
                             Log.d(TAG, "getCurrentLocation returned (acc ${loc.accuracy}m)")
-                            publishIfFresh(loc)
+                            publishIfFresh(loc, isLiveCallback = true)
                         } else {
                             Log.i(TAG, "getCurrentLocation returned null")
                         }
@@ -190,7 +227,7 @@ internal fun rememberUserLocation(hasPermission: Boolean): State<Location?> {
  * the old version silently did nothing when lastLocation was null.
  */
 @SuppressLint("MissingPermission")
-@Suppress("LongParameterList", "CognitiveComplexMethod")
+@Suppress("LongParameterList", "LongMethod", "CognitiveComplexMethod")
 internal fun recenterOnUser(
     map: MapLibreMap?,
     context: Context,
@@ -199,15 +236,36 @@ internal fun recenterOnUser(
     snackbarHostState: SnackbarHostState,
     locatingMessage: String,
     unavailableMessage: String,
+    outsideCoverageMessage: String,
+    manageMapPackLabel: String,
+    onManageMapPack: () -> Unit,
+    isInsideMapCoverage: (Double, Double) -> Boolean,
 ): RecenterRequest {
     if (map == null || !context.hasForegroundLocationPermission()) {
         Log.w(TAG, "recenter: map not ready or foreground location permission unavailable")
         return NoOpRecenterRequest
     }
 
-    if (cached != null && isLocationFixFresh(cached.time, System.currentTimeMillis())) {
+    val maxAgeMillis = maximumLocationFixAgeMillis(context.hasPreciseLocationPermission())
+    if (
+        cached != null && isLocationFixFresh(
+            fixTimeMillis = cached.time,
+            nowMillis = System.currentTimeMillis(),
+            maxAgeMillis = maxAgeMillis,
+        )
+    ) {
         Log.d(TAG, "recenter: using fresh cached fix")
-        map.animateToLatLng(cached.latitude, cached.longitude)
+        if (isInsideMapCoverage(cached.latitude, cached.longitude)) {
+            map.animateToLatLng(cached.latitude, cached.longitude)
+        } else {
+            showOutsideCoverageRecovery(
+                scope,
+                snackbarHostState,
+                outsideCoverageMessage,
+                manageMapPackLabel,
+                onManageMapPack,
+            )
+        }
         return NoOpRecenterRequest
     }
     // No fix yet — request a fresh one with feedback.
@@ -220,9 +278,25 @@ internal fun recenterOnUser(
         .addOnSuccessListener { location ->
             if (!active) return@addOnSuccessListener
             active = false
-            if (location != null && isLocationFixFresh(location.time, System.currentTimeMillis())) {
+            if (
+                location != null && isLocationFixFresh(
+                    fixTimeMillis = location.time,
+                    nowMillis = System.currentTimeMillis(),
+                    maxAgeMillis = maxAgeMillis,
+                )
+            ) {
                 Log.d(TAG, "recenter: got fresh fix")
-                map.animateToLatLng(location.latitude, location.longitude)
+                if (isInsideMapCoverage(location.latitude, location.longitude)) {
+                    map.animateToLatLng(location.latitude, location.longitude)
+                } else {
+                    showOutsideCoverageRecovery(
+                        scope,
+                        snackbarHostState,
+                        outsideCoverageMessage,
+                        manageMapPackLabel,
+                        onManageMapPack,
+                    )
+                }
             } else {
                 Log.w(TAG, "recenter: getCurrentLocation returned no fresh fix")
                 scope.launch { snackbarHostState.showSnackbar(unavailableMessage) }
@@ -251,4 +325,18 @@ private fun MapLibreMap.animateToLatLng(lat: Double, lon: Double) {
         ),
         1000,
     )
+}
+
+private fun showOutsideCoverageRecovery(
+    scope: CoroutineScope,
+    snackbarHostState: SnackbarHostState,
+    message: String,
+    actionLabel: String,
+    onManageMapPack: () -> Unit,
+) {
+    scope.launch {
+        if (snackbarHostState.showSnackbar(message, actionLabel) == SnackbarResult.ActionPerformed) {
+            onManageMapPack()
+        }
+    }
 }

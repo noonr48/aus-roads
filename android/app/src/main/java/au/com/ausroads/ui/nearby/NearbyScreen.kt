@@ -12,11 +12,13 @@
 
 package au.com.ausroads.ui.nearby
 
+import android.content.ClipData
+import android.content.ClipboardManager
 import android.content.Intent
 import android.location.Location
-import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
@@ -27,6 +29,9 @@ import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.verticalScroll
+import androidx.compose.foundation.lazy.LazyRow
+import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Cabin
 import androidx.compose.material.icons.filled.EvStation
@@ -50,6 +55,8 @@ import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Scaffold
+import androidx.compose.material3.SnackbarHost
+import androidx.compose.material3.SnackbarHostState
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.material3.TopAppBar
@@ -59,12 +66,15 @@ import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.res.stringResource
+import androidx.compose.ui.semantics.contentDescription
+import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import androidx.hilt.navigation.compose.hiltViewModel
@@ -73,10 +83,13 @@ import au.com.ausroads.core.geo.CoordinateFormatter
 import au.com.ausroads.core.model.GeoPoint
 import au.com.ausroads.offline.search.PoiCategory
 import au.com.ausroads.offline.search.SearchResult
+import au.com.ausroads.offline.search.SearchPresentation
+import au.com.ausroads.ui.map.isLocationFixFresh
+import au.com.ausroads.ui.map.maximumLocationFixAgeMillis
 import au.com.ausroads.ui.map.rememberForegroundLocationPermissionState
 import au.com.ausroads.ui.map.rememberUserLocation
-import au.com.ausroads.ui.map.isLocationFixFresh
 import java.util.Locale
+import kotlinx.coroutines.launch
 
 /** Friendly label string-resource for each [PoiCategory]. */
 private fun PoiCategory.labelRes(): Int = when (this) {
@@ -117,20 +130,39 @@ fun NearbyScreen(
     modifier: Modifier = Modifier,
     viewModel: NearbyViewModel = hiltViewModel(),
     onViewOnMap: (SearchResult) -> Unit = {},
+    onManageMapPack: () -> Unit = {},
 ) {
     val state by viewModel.uiState.collectAsState()
     val context = LocalContext.current
-    val locationPermission = rememberForegroundLocationPermissionState(context)
+    val snackbarHostState = remember { SnackbarHostState() }
+    val coroutineScope = rememberCoroutineScope()
+    val locationDeniedMessage = stringResource(R.string.nearby_location_permission_denied)
+    val shareFallbackMessage = stringResource(R.string.nearby_share_copied_fallback)
+    val locationPermission = rememberForegroundLocationPermissionState(
+        context = context,
+        onDenied = {
+            coroutineScope.launch { snackbarHostState.showSnackbar(locationDeniedMessage) }
+        },
+    )
     val userLocation = rememberUserLocation(locationPermission.isGranted)
     var appliedLocation by remember { mutableStateOf<Location?>(null) }
     var minimumFixTimeMillis by remember { mutableStateOf(0L) }
+    var useAdelaideFallback by remember { mutableStateOf(false) }
 
     LaunchedEffect(
         locationPermission.isGranted,
         userLocation.value,
         appliedLocation,
         minimumFixTimeMillis,
+        locationPermission.isPreciseGranted,
+        useAdelaideFallback,
     ) {
+        if (useAdelaideFallback) {
+            appliedLocation = null
+            minimumFixTimeMillis = 0L
+            viewModel.resetReference()
+            return@LaunchedEffect
+        }
         if (!locationPermission.isGranted) {
             appliedLocation = null
             minimumFixTimeMillis = 0L
@@ -145,6 +177,7 @@ fun NearbyScreen(
                 fixTimeMillis = it.time,
                 nowMillis = now,
                 minimumFixTimeMillis = minimumFixTimeMillis,
+                isPreciseLocationGranted = locationPermission.isPreciseGranted,
             )
         }
         if (freshFix == null) {
@@ -163,14 +196,29 @@ fun NearbyScreen(
     }
 
     val shareAt: (Double, Double, String?) -> Unit = { lat, lon, label ->
-        shareLocation(context, lat, lon, label)
+        val shareText = locationShareText(lat, lon, label)
+        if (!shareLocation(context, shareText)) {
+            copyLocation(context, shareText)
+            coroutineScope.launch { snackbarHostState.showSnackbar(shareFallbackMessage) }
+        }
     }
+    val locationStatus = stringResource(
+        when {
+            appliedLocation != null -> R.string.nearby_using_device_location
+            useAdelaideFallback -> R.string.nearby_using_adelaide_fallback
+            locationPermission.foregroundNeedsSettings ->
+                R.string.nearby_location_permission_settings
+            locationPermission.isGranted -> R.string.nearby_waiting_for_location
+            else -> R.string.nearby_using_adelaide_fallback
+        },
+    )
 
     Scaffold(
         modifier = modifier,
         topBar = {
             TopAppBar(title = { Text(stringResource(R.string.nearby_title)) })
         },
+        snackbarHost = { SnackbarHost(snackbarHostState) },
     ) { padding ->
         Column(
             modifier = Modifier
@@ -180,19 +228,50 @@ fun NearbyScreen(
                 .padding(16.dp),
             verticalArrangement = Arrangement.spacedBy(16.dp),
         ) {
+            CategorySelector(
+                categories = state.categories,
+                selected = state.selected,
+                locationStatus = locationStatus.takeIf { state.selected != null },
+                onSelect = { viewModel.selectCategory(it) },
+            )
+
+            ResultsSection(
+                state = state,
+                onViewOnMap = onViewOnMap,
+                onRetry = { state.selected?.let(viewModel::selectCategory) },
+                onManageMapPack = onManageMapPack,
+                onTryAdelaide = if (appliedLocation != null) {
+                    {
+                        useAdelaideFallback = true
+                        appliedLocation = null
+                        minimumFixTimeMillis = 0L
+                        viewModel.resetReference()
+                    }
+                } else {
+                    null
+                },
+            )
+
             CoordinatesCard(
-                reference = viewModel.reference,
-                onShare = { shareAt(viewModel.reference.latitude, viewModel.reference.longitude, null) },
-                locationStatus = stringResource(
-                    when {
-                        appliedLocation != null -> R.string.nearby_using_device_location
-                        locationPermission.foregroundNeedsSettings ->
-                            R.string.nearby_location_permission_settings
-                        locationPermission.isGranted -> R.string.nearby_waiting_for_location
-                        else -> R.string.nearby_using_adelaide_fallback
-                    },
+                state = CoordinatesCardState(
+                    reference = viewModel.reference,
+                    locationStatus = locationStatus,
+                    isLocating = locationPermission.isGranted && appliedLocation == null,
+                    useMyLocationLabel = stringResource(
+                        if (appliedLocation == null) {
+                            if (locationPermission.foregroundNeedsSettings) {
+                                R.string.nearby_open_location_settings
+                            } else {
+                                R.string.nearby_use_my_location
+                            }
+                        } else {
+                            R.string.nearby_refresh_location
+                        },
+                    ),
                 ),
+                onShare = { shareAt(viewModel.reference.latitude, viewModel.reference.longitude, null) },
                 onUseMyLocation = {
+                    useAdelaideFallback = false
                     if (locationPermission.isGranted) {
                         appliedLocation = null
                         minimumFixTimeMillis = System.currentTimeMillis()
@@ -200,36 +279,13 @@ fun NearbyScreen(
                         locationPermission.request()
                     }
                 },
-                useMyLocationLabel = stringResource(
-                    if (appliedLocation == null) {
-                        if (locationPermission.foregroundNeedsSettings) {
-                            R.string.nearby_open_location_settings
-                        } else {
-                            R.string.nearby_use_my_location
-                        }
-                    } else {
-                        R.string.nearby_refresh_location
-                    },
-                ),
             )
 
             EmergencySection(
-                emergency = state.emergency,
+                state = state,
                 onShare = shareAt,
-            )
-
-            CategorySelector(
-                categories = state.categories,
-                selected = state.selected,
-                onSelect = { viewModel.selectCategory(it) },
-            )
-
-            ResultsSection(
-                selected = state.selected,
-                results = state.results,
-                isLoading = state.isLoading,
-                searchUnavailable = state.searchUnavailable,
-                onViewOnMap = onViewOnMap,
+                onRetry = viewModel::loadEmergency,
+                onManageMapPack = onManageMapPack,
             )
         }
     }
@@ -237,11 +293,9 @@ fun NearbyScreen(
 
 @Composable
 private fun CoordinatesCard(
-    reference: GeoPoint,
+    state: CoordinatesCardState,
     onShare: () -> Unit,
-    locationStatus: String,
     onUseMyLocation: () -> Unit,
-    useMyLocationLabel: String,
 ) {
     Card(
         modifier = Modifier.fillMaxWidth(),
@@ -257,23 +311,31 @@ private fun CoordinatesCard(
                 text = stringResource(R.string.nearby_coordinates),
                 style = MaterialTheme.typography.titleMedium,
             )
-            Text(
-                text = locationStatus,
-                style = MaterialTheme.typography.bodySmall,
-                color = MaterialTheme.colorScheme.onSurfaceVariant,
-            )
+            Row(
+                horizontalArrangement = Arrangement.spacedBy(8.dp),
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                if (state.isLocating) {
+                    CircularProgressIndicator(modifier = Modifier.size(16.dp), strokeWidth = 2.dp)
+                }
+                Text(
+                    text = state.locationStatus,
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+            }
             Spacer(Modifier.height(4.dp))
             CoordinateRow(
                 label = stringResource(R.string.nearby_coordinate_decimal),
-                value = CoordinateFormatter.decimalDegrees(reference),
+                value = CoordinateFormatter.decimalDegrees(state.reference),
             )
             CoordinateRow(
                 label = stringResource(R.string.nearby_coordinate_dms),
-                value = CoordinateFormatter.dms(reference),
+                value = CoordinateFormatter.dms(state.reference),
             )
             CoordinateRow(
                 label = stringResource(R.string.nearby_coordinate_mgrs),
-                value = CoordinateFormatter.mgrs(reference),
+                value = CoordinateFormatter.mgrs(state.reference),
             )
             Spacer(Modifier.height(4.dp))
             TextButton(onClick = onShare) {
@@ -290,13 +352,20 @@ private fun CoordinatesCard(
                     modifier = Modifier.size(18.dp),
                 )
                 Text(
-                    text = useMyLocationLabel,
+                    text = state.useMyLocationLabel,
                     modifier = Modifier.padding(start = 8.dp),
                 )
             }
         }
     }
 }
+
+private data class CoordinatesCardState(
+    val reference: GeoPoint,
+    val locationStatus: String,
+    val isLocating: Boolean,
+    val useMyLocationLabel: String,
+)
 
 @Composable
 private fun CoordinateRow(label: String, value: String) {
@@ -317,12 +386,14 @@ private fun CoordinateRow(label: String, value: String) {
 
 @Composable
 private fun EmergencySection(
-    emergency: EmergencyInfo?,
+    state: NearbyUiState,
     onShare: (Double, Double, String?) -> Unit,
+    onRetry: () -> Unit,
+    onManageMapPack: () -> Unit,
 ) {
-    val hospital = emergency?.hospital
-    val police = emergency?.police
-    if (hospital == null && police == null) return
+    val hospital = state.emergency?.hospital
+    val police = state.emergency?.police
+    val hasAnyResult = hospital != null || police != null
 
     Card(
         modifier = Modifier.fillMaxWidth(),
@@ -339,6 +410,19 @@ private fun EmergencySection(
                 style = MaterialTheme.typography.titleMedium,
                 color = MaterialTheme.colorScheme.onErrorContainer,
             )
+            if (state.isEmergencyLoading) {
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.spacedBy(12.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                ) {
+                    CircularProgressIndicator(modifier = Modifier.size(20.dp), strokeWidth = 2.dp)
+                    Text(
+                        text = stringResource(R.string.nearby_emergency_loading),
+                        color = MaterialTheme.colorScheme.onErrorContainer,
+                    )
+                }
+            }
             hospital?.let {
                 EmergencyRow(
                     label = stringResource(R.string.nearby_nearest_hospital),
@@ -352,6 +436,32 @@ private fun EmergencySection(
                     item = it,
                     onShare = onShare,
                 )
+            }
+            if (state.searchUnavailable) {
+                Text(
+                    text = stringResource(R.string.nearby_emergency_preparing),
+                    color = MaterialTheme.colorScheme.onErrorContainer,
+                )
+                TextButton(onClick = onManageMapPack) {
+                    Text(stringResource(R.string.map_manage_pack))
+                }
+            }
+            if (!state.searchUnavailable && !state.isEmergencyLoading) {
+                if (!hasAnyResult && !state.emergencyError) {
+                    Text(
+                        text = stringResource(R.string.nearby_emergency_empty),
+                        color = MaterialTheme.colorScheme.onErrorContainer,
+                    )
+                }
+            }
+            if (!state.isEmergencyLoading && state.emergencyError) {
+                Text(
+                    text = stringResource(R.string.nearby_emergency_failed),
+                    color = MaterialTheme.colorScheme.onErrorContainer,
+                )
+                TextButton(onClick = onRetry) {
+                    Text(stringResource(R.string.action_retry))
+                }
             }
         }
     }
@@ -389,7 +499,10 @@ private fun EmergencyRow(
         ) {
             Icon(
                 Icons.Filled.Share,
-                contentDescription = stringResource(R.string.nearby_share_location),
+                contentDescription = stringResource(
+                    R.string.nearby_share_named_location,
+                    item.result.name,
+                ),
                 tint = MaterialTheme.colorScheme.onErrorContainer,
             )
         }
@@ -401,20 +514,38 @@ private fun EmergencyRow(
 private fun CategorySelector(
     categories: List<PoiCategory>,
     selected: PoiCategory?,
+    locationStatus: String?,
     onSelect: (PoiCategory) -> Unit,
 ) {
+    val categoryListState = rememberLazyListState()
+
+    LaunchedEffect(categories, selected) {
+        val selectedIndex = categories.indexOf(selected)
+        if (selectedIndex >= 0) categoryListState.animateScrollToItem(selectedIndex)
+    }
+
     Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
         Text(
             text = stringResource(R.string.nearby_categories_title),
             style = MaterialTheme.typography.titleMedium,
         )
-        Row(
-            modifier = Modifier
-                .fillMaxWidth()
-                .horizontalScroll(rememberScrollState()),
+        locationStatus?.let { status ->
+            Text(
+                text = status,
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+        }
+        LazyRow(
+            modifier = Modifier.fillMaxWidth(),
+            state = categoryListState,
             horizontalArrangement = Arrangement.spacedBy(8.dp),
+            contentPadding = PaddingValues(end = 16.dp),
         ) {
-            categories.forEach { category ->
+            items(
+                items = categories,
+                key = PoiCategory::name,
+            ) { category ->
                 FilterChip(
                     selected = category == selected,
                     onClick = { onSelect(category) },
@@ -434,24 +565,31 @@ private fun CategorySelector(
 
 @Composable
 private fun ResultsSection(
-    selected: PoiCategory?,
-    results: List<NearbyResult>,
-    isLoading: Boolean,
-    searchUnavailable: Boolean,
+    state: NearbyUiState,
     onViewOnMap: (SearchResult) -> Unit,
+    onRetry: () -> Unit,
+    onManageMapPack: () -> Unit,
+    onTryAdelaide: (() -> Unit)?,
 ) {
     when {
-        searchUnavailable -> {
-            Text(
-                text = stringResource(R.string.nearby_search_unavailable),
-                style = MaterialTheme.typography.bodyMedium,
-                color = MaterialTheme.colorScheme.error,
-                textAlign = TextAlign.Center,
+        state.searchUnavailable -> {
+            Column(
                 modifier = Modifier.fillMaxWidth().padding(vertical = 16.dp),
-            )
+                horizontalAlignment = Alignment.CenterHorizontally,
+            ) {
+                Text(
+                    text = stringResource(R.string.nearby_search_unavailable),
+                    style = MaterialTheme.typography.bodyMedium,
+                    color = MaterialTheme.colorScheme.error,
+                    textAlign = TextAlign.Center,
+                )
+                TextButton(onClick = onManageMapPack) {
+                    Text(stringResource(R.string.map_manage_pack))
+                }
+            }
         }
 
-        isLoading -> {
+        state.isLoading -> {
             Row(
                 modifier = Modifier.fillMaxWidth().padding(vertical = 24.dp),
                 horizontalArrangement = Arrangement.Center,
@@ -460,26 +598,52 @@ private fun ResultsSection(
             }
         }
 
-        selected != null && results.isEmpty() -> {
-            Text(
-                text = stringResource(
-                    R.string.nearby_no_results,
-                    stringResource(selected.labelRes()),
-                ),
-                style = MaterialTheme.typography.bodyMedium,
-                color = MaterialTheme.colorScheme.onSurfaceVariant,
-                textAlign = TextAlign.Center,
+        state.categoryError -> {
+            Column(
                 modifier = Modifier.fillMaxWidth().padding(vertical = 16.dp),
-            )
+                horizontalAlignment = Alignment.CenterHorizontally,
+            ) {
+                Text(
+                    text = stringResource(R.string.nearby_query_failed),
+                    style = MaterialTheme.typography.bodyMedium,
+                    color = MaterialTheme.colorScheme.error,
+                    textAlign = TextAlign.Center,
+                )
+                TextButton(onClick = onRetry) {
+                    Text(stringResource(R.string.action_retry))
+                }
+            }
         }
 
-        results.isNotEmpty() -> {
+        state.selected != null && state.results.isEmpty() -> {
+            Column(
+                modifier = Modifier.fillMaxWidth().padding(vertical = 16.dp),
+                horizontalAlignment = Alignment.CenterHorizontally,
+            ) {
+                Text(
+                    text = stringResource(
+                        R.string.nearby_no_results,
+                        stringResource(state.selected.labelRes()),
+                    ),
+                    style = MaterialTheme.typography.bodyMedium,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    textAlign = TextAlign.Center,
+                )
+                onTryAdelaide?.let { action ->
+                    TextButton(onClick = action) {
+                        Text(stringResource(R.string.nearby_try_adelaide))
+                    }
+                }
+            }
+        }
+
+        state.results.isNotEmpty() -> {
             Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
                 Text(
                     text = stringResource(R.string.nearby_results_title),
                     style = MaterialTheme.typography.titleMedium,
                 )
-                results.forEach { item ->
+                state.results.forEach { item ->
                     ResultRow(item = item, onViewOnMap = onViewOnMap)
                 }
             }
@@ -507,9 +671,9 @@ private fun ResultRow(
                     text = item.result.name,
                     style = MaterialTheme.typography.titleMedium,
                 )
-                item.result.className?.takeIf { it.isNotBlank() }?.let { cls ->
+                SearchPresentation.classLabel(item.result.className)?.let { category ->
                     Text(
-                        text = cls,
+                        text = category,
                         style = MaterialTheme.typography.bodySmall,
                         color = MaterialTheme.colorScheme.onSurfaceVariant,
                     )
@@ -525,7 +689,10 @@ private fun ResultRow(
             ) {
                 Icon(
                     Icons.Filled.Place,
-                    contentDescription = stringResource(R.string.nearby_view_on_map),
+                    contentDescription = stringResource(
+                        R.string.nearby_view_named_on_map,
+                        item.result.name,
+                    ),
                 )
             }
         }
@@ -541,20 +708,24 @@ private fun formatDistance(meters: Double): String =
     }
 
 /**
- * Share a human-readable coordinate through ordinary messaging/email targets.
- * Best-effort: if no app can handle it, the call is ignored rather than crashing.
+ * Share prepared coordinate text through ordinary messaging/email targets.
+ * Returns false so the caller can preserve the value through a clipboard fallback.
  */
 private fun shareLocation(
     context: android.content.Context,
-    lat: Double,
-    lon: Double,
-    label: String?,
-) {
+    shareText: String,
+): Boolean {
     val intent = Intent(Intent.ACTION_SEND)
         .setType("text/plain")
-        .putExtra(Intent.EXTRA_TEXT, locationShareText(lat, lon, label))
+        .putExtra(Intent.EXTRA_TEXT, shareText)
     val chooser = Intent.createChooser(intent, context.getString(R.string.nearby_share_location))
-    runCatching { context.startActivity(chooser) }
+    return runCatching { context.startActivity(chooser) }.isSuccess
+}
+
+private fun copyLocation(context: android.content.Context, shareText: String) {
+    context.getSystemService(ClipboardManager::class.java)?.setPrimaryClip(
+        ClipData.newPlainText(context.getString(R.string.nearby_clipboard_label), shareText),
+    )
 }
 
 internal fun locationShareText(lat: Double, lon: Double, label: String?): String {
@@ -574,11 +745,18 @@ internal fun isFreshNearbyFix(
     fixTimeMillis: Long,
     nowMillis: Long,
     minimumFixTimeMillis: Long,
+    isPreciseLocationGranted: Boolean,
 ): Boolean {
+    // Android may deliver approximate fixes only every several minutes. A
+    // manual refresh cannot force that cadence, so keep the current coarse fix
+    // instead of silently falling back to Adelaide until another callback.
+    val effectiveMinimumFixTimeMillis =
+        if (isPreciseLocationGranted) minimumFixTimeMillis else 0L
     return isLocationFixFresh(
         fixTimeMillis = fixTimeMillis,
         nowMillis = nowMillis,
-        minimumFixTimeMillis = minimumFixTimeMillis,
+        minimumFixTimeMillis = effectiveMinimumFixTimeMillis,
+        maxAgeMillis = maximumLocationFixAgeMillis(isPreciseLocationGranted),
     )
 }
 

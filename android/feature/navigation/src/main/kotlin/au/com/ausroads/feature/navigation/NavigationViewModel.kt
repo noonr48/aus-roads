@@ -1,12 +1,9 @@
 package au.com.ausroads.feature.navigation
 
-import android.os.BatteryManager
 import android.Manifest
 import android.content.Context
-import android.content.Intent
-import android.content.IntentFilter
 import android.content.pm.PackageManager
-import android.os.Build
+import android.os.BatteryManager
 import androidx.core.content.ContextCompat
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
@@ -36,6 +33,16 @@ class NavigationViewModel @Inject constructor(
     private val routingEngine: RoutingEngine,
 ) : ViewModel() {
 
+    internal constructor(
+        context: Context,
+        locationProvider: NavigationLocationSource,
+        tts: NavigationTts,
+        routingEngine: RoutingEngine,
+        preciseLocationPermissionChecker: () -> Boolean,
+    ) : this(context, locationProvider, tts, routingEngine) {
+        this.preciseLocationPermissionChecker = preciseLocationPermissionChecker
+    }
+
     private val _state = MutableStateFlow<NavigationState>(NavigationState.Idle)
     val state: StateFlow<NavigationState> = _state.asStateFlow()
 
@@ -46,11 +53,23 @@ class NavigationViewModel @Inject constructor(
     private var maneuvers: List<Maneuver> = emptyList()
     private var currentManeuverIndex = 0
     private var navigationJob: Job? = null
+    private var locationTrackingGeneration = 0L
+    private var locationTrackingRequested = false
+    private var navigationHostStarted = false
+    private var recalculationJob: Job? = null
+    private var recalculationGeneration = 0L
     private var navigationStartTime = 0L
     private var savedDestination: GeoPoint? = null
+    private var lastKnownPosition: GeoPoint? = null
     private var lastRecalcTime = 0L
     private var isRecalculating = false
     private var lastNavigatingState: NavigationState.Navigating? = null
+    private var preciseLocationPermissionChecker: () -> Boolean = {
+        ContextCompat.checkSelfPermission(
+            context,
+            Manifest.permission.ACCESS_FINE_LOCATION,
+        ) == PackageManager.PERMISSION_GRANTED
+    }
 
     // Mirrors Settings.ttsEnabled. Bridged in from the UI layer (which owns the
     // settings dependency) so voice guidance actually honours the toggle.
@@ -64,18 +83,22 @@ class NavigationViewModel @Inject constructor(
     /** Starts live navigation only when Android has granted precise location. */
     fun startNavigation(routeResult: RouteResult): Boolean {
         if (!hasPreciseLocationPermission()) {
+            // Permission can be revoked between the route-sheet check and this call.
+            // End any older session so its late work cannot replace this safety state.
+            stopNavigation()
             _state.update { NavigationState.PreciseLocationRequired }
             return false
         }
 
         route = routeResult
+        cancelRecalculation()
         maneuvers = routeResult.maneuvers
         currentManeuverIndex = 0
         navigationStartTime = System.currentTimeMillis()
         _batteryWarning.update { false }
         savedDestination = routeResult.geometry.lastOrNull()
+        lastKnownPosition = null
         lastRecalcTime = 0L
-        isRecalculating = false
 
         // Initialize TTS for voice guidance
         tts.initialize()
@@ -91,20 +114,23 @@ class NavigationViewModel @Inject constructor(
         lastNavigatingState = initialState
         _state.update { initialState }
 
+        locationTrackingRequested = true
+        pauseGpsTracking()
         startGpsTracking()
         return true
     }
 
     fun stopNavigation() {
-        navigationJob?.cancel()
-        navigationJob = null
+        locationTrackingRequested = false
+        pauseGpsTracking()
+        cancelRecalculation()
         route = null
         maneuvers = emptyList()
         currentManeuverIndex = 0
         navigationStartTime = 0L
         savedDestination = null
+        lastKnownPosition = null
         lastRecalcTime = 0L
-        isRecalculating = false
         lastNavigatingState = null
         _batteryWarning.update { false }
         _state.update { NavigationState.Idle }
@@ -112,6 +138,7 @@ class NavigationViewModel @Inject constructor(
     }
 
     fun updatePosition(position: GeoPoint, speedKmh: Double) {
+        lastKnownPosition = position
         val current = _state.value
         if (current !is NavigationState.Navigating) return
 
@@ -122,7 +149,8 @@ class NavigationViewModel @Inject constructor(
             if (distToDest < ARRIVAL_THRESHOLD_METERS) {
                 _state.update { NavigationState.Arrived }
                 if (ttsEnabled) tts.speakArrival()
-                navigationJob?.cancel()
+                locationTrackingRequested = false
+                pauseGpsTracking()
                 return
             }
         }
@@ -173,18 +201,35 @@ class NavigationViewModel @Inject constructor(
         }
     }
 
-    private fun hasPreciseLocationPermission(): Boolean {
-        return ContextCompat.checkSelfPermission(
-            context, Manifest.permission.ACCESS_FINE_LOCATION,
-        ) == PackageManager.PERMISSION_GRANTED
+    private fun hasPreciseLocationPermission(): Boolean = preciseLocationPermissionChecker()
+
+    /**
+     * Binds the retained navigation session to its visible Compose host. The
+     * session and guidance stay in memory across backgrounding, but the live
+     * provider subscription exists only while that host is started.
+     */
+    internal fun onHostStarted() {
+        if (navigationHostStarted) return
+        navigationHostStarted = true
+        startGpsTracking()
+    }
+
+    internal fun onHostStopped() {
+        if (!navigationHostStarted) return
+        navigationHostStarted = false
+        pauseGpsTracking()
     }
 
     @Suppress("TooGenericExceptionCaught") // provider implementations report platform-specific failures
     private fun startGpsTracking() {
-        navigationJob?.cancel()
+        if (!navigationHostStarted || !locationTrackingRequested) return
+        if (navigationJob?.isActive == true) return
+
+        val generation = ++locationTrackingGeneration
         navigationJob = viewModelScope.launch {
             try {
                 locationProvider.locationUpdates(intervalMs = 1000).collect { loc ->
+                    if (!canPublishLocation(generation)) return@collect
                     updatePosition(
                         GeoPoint(longitude = loc.longitude, latitude = loc.latitude),
                         loc.speedKmh,
@@ -193,12 +238,29 @@ class NavigationViewModel @Inject constructor(
             } catch (e: CancellationException) {
                 throw e
             } catch (e: Exception) {
+                if (!canPublishLocation(generation)) return@launch
+                locationTrackingRequested = false
+                cancelRecalculation()
                 val previous = lastNavigatingState
                 if (previous != null) {
                     _state.update { NavigationState.LocationUnavailable(previous) }
                 }
+            } finally {
+                if (generation == locationTrackingGeneration) navigationJob = null
             }
         }
+    }
+
+    private fun canPublishLocation(generation: Long): Boolean =
+        generation == locationTrackingGeneration &&
+            navigationHostStarted &&
+            locationTrackingRequested
+
+    private fun pauseGpsTracking() {
+        locationTrackingGeneration++
+        val activeJob = navigationJob
+        navigationJob = null
+        activeJob?.cancel()
     }
 
     fun retryLocation() {
@@ -209,6 +271,8 @@ class NavigationViewModel @Inject constructor(
         }
         lastNavigatingState = unavailable.previousState
         _state.update { unavailable.previousState }
+        locationTrackingRequested = true
+        pauseGpsTracking()
         startGpsTracking()
     }
 
@@ -227,26 +291,48 @@ class NavigationViewModel @Inject constructor(
 
     private fun triggerRecalculation(currentPos: GeoPoint, currentState: NavigationState.Navigating) {
         val dest = savedDestination ?: return
+        launchRecalculation(currentPos, dest, currentState)
+    }
+
+    fun retryRecalculation() {
+        val failed = _state.value as? NavigationState.RecalculationFailed ?: return
+        launchRecalculation(
+            origin = lastKnownPosition ?: failed.lastAttemptOrigin,
+            destination = failed.destination,
+            previousState = failed.previousState,
+        )
+    }
+
+    @Suppress("TooGenericExceptionCaught") // routing engines expose implementation-specific failures
+    private fun launchRecalculation(
+        origin: GeoPoint,
+        destination: GeoPoint,
+        previousState: NavigationState.Navigating,
+    ) {
+        recalculationJob?.cancel()
+        val generation = ++recalculationGeneration
         isRecalculating = true
         lastRecalcTime = System.currentTimeMillis()
 
         _state.update {
             NavigationState.Recalculating(
-                previousState = currentState,
-                destination = dest,
+                previousState = previousState,
+                destination = destination,
             )
         }
         if (ttsEnabled) tts.speakText(context.getString(R.string.nav_recalculating_tts))
 
-        viewModelScope.launch {
+        recalculationJob = viewModelScope.launch {
             try {
                 val result = routingEngine.computeRoute(
                     RouteRequest(
-                        origin = currentPos,
-                        destination = dest,
+                        origin = origin,
+                        destination = destination,
                         costingProfile = CostingProfile.AUTO,
                     ),
                 )
+                if (!ownsRecalculation(generation)) return@launch
+
                 route = result
                 maneuvers = result.maneuvers
                 currentManeuverIndex = 0
@@ -256,7 +342,7 @@ class NavigationViewModel @Inject constructor(
                         nextManeuver = maneuvers.getOrNull(1),
                         remainingDistanceMeters = result.distanceMeters.toDouble(),
                         remainingDurationSeconds = result.durationSeconds.toDouble(),
-                        currentSpeedKmh = currentState.currentSpeedKmh,
+                        currentSpeedKmh = previousState.currentSpeedKmh,
                         maneuverIndex = 0,
                         totalManeuvers = maneuvers.size,
                     )
@@ -266,12 +352,32 @@ class NavigationViewModel @Inject constructor(
             } catch (e: CancellationException) {
                 throw e
             } catch (_: Exception) {
-                _state.update { currentState }
+                if (!ownsRecalculation(generation)) return@launch
+                _state.update {
+                    NavigationState.RecalculationFailed(
+                        previousState = previousState,
+                        lastAttemptOrigin = origin,
+                        destination = destination,
+                    )
+                }
                 if (ttsEnabled) tts.speakText(context.getString(R.string.nav_recalc_failed_tts))
             } finally {
-                isRecalculating = false
+                if (ownsRecalculation(generation)) {
+                    isRecalculating = false
+                    recalculationJob = null
+                }
             }
         }
+    }
+
+    private fun ownsRecalculation(generation: Long): Boolean =
+        generation == recalculationGeneration
+
+    private fun cancelRecalculation() {
+        recalculationGeneration++
+        recalculationJob?.cancel()
+        recalculationJob = null
+        isRecalculating = false
     }
 
     private fun calculateRemainingDuration(currentPos: GeoPoint): Double {
@@ -292,18 +398,8 @@ class NavigationViewModel @Inject constructor(
 
     private fun getBatteryPercent(): Int {
         return try {
-            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.LOLLIPOP) {
-                val bm = context.getSystemService(Context.BATTERY_SERVICE) as BatteryManager
-                bm.getIntProperty(BatteryManager.BATTERY_PROPERTY_CAPACITY)
-            } else {
-                val intent = context.registerReceiver(
-                    null,
-                    IntentFilter(Intent.ACTION_BATTERY_CHANGED),
-                )
-                val level = intent?.getIntExtra(BatteryManager.EXTRA_LEVEL, -1) ?: -1
-                val scale = intent?.getIntExtra(BatteryManager.EXTRA_SCALE, -1) ?: -1
-                if (level >= 0 && scale > 0) (level * 100 / scale) else -1
-            }
+            val batteryManager = context.getSystemService(Context.BATTERY_SERVICE) as BatteryManager
+            batteryManager.getIntProperty(BatteryManager.BATTERY_PROPERTY_CAPACITY)
         } catch (_: Exception) {
             -1 // Unknown
         }

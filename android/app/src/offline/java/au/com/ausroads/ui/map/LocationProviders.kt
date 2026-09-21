@@ -18,6 +18,7 @@ import android.os.Handler
 import android.os.Looper
 import android.util.Log
 import androidx.compose.material3.SnackbarHostState
+import androidx.compose.material3.SnackbarResult
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.State
@@ -57,10 +58,17 @@ internal fun rememberUserLocation(hasPermission: Boolean): State<Location?> {
         val clearExpiredFix = Runnable {
             if (location.value?.time == expiringFixTimeMillis) location.value = null
         }
-        fun publishFresh(fix: Location?) {
+        fun publishFresh(
+            fix: Location?,
+            maxAgeMillis: Long,
+        ) {
             handler.removeCallbacks(clearExpiredFix)
             val delayMillis = fix?.let {
-                remainingLocationFreshnessMillis(it.time, System.currentTimeMillis())
+                remainingLocationFreshnessMillis(
+                    fixTimeMillis = it.time,
+                    nowMillis = System.currentTimeMillis(),
+                    maxAgeMillis = maxAgeMillis,
+                )
             }
             if (fix == null || delayMillis == null) {
                 expiringFixTimeMillis = null
@@ -74,7 +82,22 @@ internal fun rememberUserLocation(hasPermission: Boolean): State<Location?> {
         val listener = object : LocationListener {
             override fun onLocationChanged(fix: Location) {
                 Log.d(TAG, "native location update (acc ${fix.accuracy}m)")
-                if (isLocationFixFresh(fix.time, System.currentTimeMillis())) publishFresh(fix)
+                val receivedAtMillis = System.currentTimeMillis()
+                val isPreciseLocationGranted = context.hasPreciseLocationPermission()
+                val displayTimeMillis = liveLocationDisplayTimeMillis(
+                    fixTimeMillis = fix.time,
+                    receivedAtMillis = receivedAtMillis,
+                    isPreciseLocationGranted = isPreciseLocationGranted,
+                ) ?: return
+                val displayFix = if (displayTimeMillis == fix.time) {
+                    fix
+                } else {
+                    Location(fix).apply { time = displayTimeMillis }
+                }
+                publishFresh(
+                    fix = displayFix,
+                    maxAgeMillis = maximumLocationFixAgeMillis(isPreciseLocationGranted),
+                )
             }
 
             @Deprecated("Deprecated in Android")
@@ -88,11 +111,14 @@ internal fun rememberUserLocation(hasPermission: Boolean): State<Location?> {
             if (isStarted) return
             isStarted = true
             val providers = manager.usableProviders()
+            val maxAgeMillis = maximumLocationFixAgeMillis(context.hasPreciseLocationPermission())
             publishFresh(
                 manager.bestFreshLastKnownLocation(
                     providers = providers,
                     nowMillis = System.currentTimeMillis(),
+                    maxAgeMillis = maxAgeMillis,
                 ),
+                maxAgeMillis = maxAgeMillis,
             )
             providers.forEach { provider ->
                 runCatching {
@@ -135,7 +161,7 @@ internal fun rememberUserLocation(hasPermission: Boolean): State<Location?> {
 }
 
 @SuppressLint("MissingPermission")
-@Suppress("LongParameterList", "DEPRECATION", "CognitiveComplexMethod")
+@Suppress("LongParameterList", "LongMethod", "DEPRECATION", "CognitiveComplexMethod")
 internal fun recenterOnUser(
     map: MapLibreMap?,
     context: Context,
@@ -144,16 +170,34 @@ internal fun recenterOnUser(
     snackbarHostState: SnackbarHostState,
     locatingMessage: String,
     unavailableMessage: String,
+    outsideCoverageMessage: String,
+    manageMapPackLabel: String,
+    onManageMapPack: () -> Unit,
+    isInsideMapCoverage: (Double, Double) -> Boolean,
 ): RecenterRequest {
     if (map == null || !context.hasForegroundLocationPermission()) return NoOpRecenterRequest
     val manager = context.getSystemService(LocationManager::class.java)
     val providers = manager.usableProviders()
     val nowMillis = System.currentTimeMillis()
+    val isPreciseLocationGranted = context.hasPreciseLocationPermission()
+    val maxAgeMillis = maximumLocationFixAgeMillis(isPreciseLocationGranted)
     val immediate = cached
-        ?.takeIf { fix -> isLocationFixFresh(fix.time, nowMillis) }
-        ?: manager.bestFreshLastKnownLocation(providers, nowMillis)
+        ?.takeIf { fix ->
+            isLocationFixFresh(fix.time, nowMillis, maxAgeMillis = maxAgeMillis)
+        }
+        ?: manager.bestFreshLastKnownLocation(providers, nowMillis, maxAgeMillis)
     if (immediate != null) {
-        map.animateToLatLng(immediate.latitude, immediate.longitude)
+        if (isInsideMapCoverage(immediate.latitude, immediate.longitude)) {
+            map.animateToLatLng(immediate.latitude, immediate.longitude)
+        } else {
+            showOutsideCoverageRecovery(
+                scope,
+                snackbarHostState,
+                outsideCoverageMessage,
+                manageMapPackLabel,
+                onManageMapPack,
+            )
+        }
         return NoOpRecenterRequest
     }
 
@@ -173,7 +217,12 @@ internal fun recenterOnUser(
                 !isLocationFixFresh(
                     fixTimeMillis = fix.time,
                     nowMillis = now,
-                    minimumFixTimeMillis = requestStartedAtMillis,
+                    minimumFixTimeMillis = if (isPreciseLocationGranted) {
+                        requestStartedAtMillis
+                    } else {
+                        0L
+                    },
+                    maxAgeMillis = maxAgeMillis,
                 )
             ) {
                 Log.d(TAG, "ignoring stale native recenter callback")
@@ -182,7 +231,17 @@ internal fun recenterOnUser(
             completed = true
             manager.removeUpdates(this)
             handler.removeCallbacksAndMessages(this)
-            map.animateToLatLng(fix.latitude, fix.longitude)
+            if (isInsideMapCoverage(fix.latitude, fix.longitude)) {
+                map.animateToLatLng(fix.latitude, fix.longitude)
+            } else {
+                showOutsideCoverageRecovery(
+                    scope,
+                    snackbarHostState,
+                    outsideCoverageMessage,
+                    manageMapPackLabel,
+                    onManageMapPack,
+                )
+            }
         }
 
         @Deprecated("Deprecated in Android")
@@ -229,6 +288,7 @@ private fun LocationManager.usableProviders(): List<String> =
 private fun LocationManager.bestFreshLastKnownLocation(
     providers: List<String>,
     nowMillis: Long,
+    maxAgeMillis: Long,
 ): Location? = selectBestFreshFix(
     candidates = providers.mapNotNull { provider ->
         runCatching { getLastKnownLocation(provider) }.getOrNull()
@@ -236,6 +296,7 @@ private fun LocationManager.bestFreshLastKnownLocation(
     nowMillis = nowMillis,
     fixTimeMillis = Location::getTime,
     accuracyMeters = { fix -> if (fix.hasAccuracy()) fix.accuracy else null },
+    maxAgeMillis = maxAgeMillis,
 )
 
 private fun MapLibreMap.animateToLatLng(latitude: Double, longitude: Double) {
@@ -243,6 +304,20 @@ private fun MapLibreMap.animateToLatLng(latitude: Double, longitude: Double) {
         CameraUpdateFactory.newLatLngZoom(LatLng(latitude, longitude), MY_LOCATION_ZOOM),
         1_000,
     )
+}
+
+private fun showOutsideCoverageRecovery(
+    scope: CoroutineScope,
+    snackbarHostState: SnackbarHostState,
+    message: String,
+    actionLabel: String,
+    onManageMapPack: () -> Unit,
+) {
+    scope.launch {
+        if (snackbarHostState.showSnackbar(message, actionLabel) == SnackbarResult.ActionPerformed) {
+            onManageMapPack()
+        }
+    }
 }
 
 private const val LOCATION_TIMEOUT_MS = 10_000L

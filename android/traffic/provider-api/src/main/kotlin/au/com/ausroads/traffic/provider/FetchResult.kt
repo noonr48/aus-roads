@@ -25,6 +25,13 @@ data class FetchResult(
      */
     val etag: String?,
     val lastModified: String?,
+    /**
+     * True when the upstream returned HTTP 304 and [events] intentionally carries no
+     * replacement payload. Consumers must retain the events from the matching prior
+     * request. A successful response with an empty [events] list leaves this false and
+     * therefore clears any previously cached events.
+     */
+    val notModified: Boolean = false,
 ) {
     companion object {
         val Empty = FetchResult(
