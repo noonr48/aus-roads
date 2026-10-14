@@ -1,5 +1,7 @@
 package au.com.ausroads.offline.download
 
+import androidx.work.Data
+import au.com.ausroads.offline.download.download.PackInstaller
 import com.google.common.truth.Truth.assertThat
 import kotlinx.coroutines.CancellationException
 import org.junit.After
@@ -62,6 +64,22 @@ class WorkerFailureContractTest {
         // Same instance escapes untouched: mapping it to Result.failure would mark
         // ordinary cancelled stops FAILED with bogus errors.
         assertThat(escaped).isSameInstanceAs(cancel)
+    }
+
+    @Test
+    fun `new refusal tokens persist under result error without payload leakage`() {
+        val refusals = mapOf(
+            PackInstaller.TARGET_REFERENCED to "pack_target_referenced",
+            PackInstaller.MANIFEST_INVALID to "pack_manifest_invalid",
+            PackInstaller.STATE_UNREADABLE to "pack_state_unreadable",
+            PackInstaller.TARGET_INVALID to "pack_target_invalid",
+        )
+        refusals.forEach { (message, expected) ->
+            val output = workerFailureData(message)
+            val persisted = Data.fromByteArray(output.toByteArray())
+            assertThat(persisted.getString(MapPackDownloadWorker.KEY_RESULT_ERROR)).isEqualTo(expected)
+            assertThat(persisted.keyValueMap.keys).containsExactly(MapPackDownloadWorker.KEY_RESULT_ERROR)
+        }
     }
 
     @Test

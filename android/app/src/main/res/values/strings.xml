@@ -67,8 +67,10 @@
     <string name="about_section_privacy">Privacy</string>
     <string name="about_osm_attribution">© OpenStreetMap contributors. Map data is licensed under the Open Database License (ODbL).</string>
     <string name="about_odbl_notice">OpenStreetMap data is © OpenStreetMap contributors and licensed under the Open Database License (ODbL) 1.0. Any derived database (e.g. the aus-roads map pack) must carry this attribution visibly. See https://www.openstreetmap.org/copyright for full terms.</string>
-    <string name="about_privacy_posture">This app makes no network requests after the first-time map pack download. No analytics. No ads. No accounts. No background location.</string>
-    <string name="about_privacy_full">aus-roads collects nothing: no analytics SDK, no crash reporter, no advertising identifiers, no accounts, and no trackers. It is offline-first — maps, search and routing run locally on your device from an installed map pack. Cloud backup and device-to-device transfer are disabled, and all of your data stays on this device. In the network-enabled build the INTERNET permission exists solely to download official map packs hosted on the project GitHub Releases; the offline build declares no INTERNET or location permissions at all. The privacy posture is documented in the project repository under docs/notes/privacy.md and reflected in this in-app privacy section.</string>
+    <string name="about_privacy_posture">Offline maps and place suggestions use local data. No analytics, ads or accounts. Network and location capabilities depend on the edition.</string>
+    <string name="about_privacy_offline">This edition has no internet or location permissions. Your interests and explicit visits stay on this device. No analytics, ads or accounts.</string>
+    <string name="about_privacy_network">This edition can use internet for map downloads and live traffic. Your interests and explicit visits stay on this device. Device location supports maps and navigation when you allow it. No analytics, ads or accounts.</string>
+    <string name="about_privacy_full">Maps, search and routing use local included or installed data. Interests, explicit visits, pins and route history are stored on this device; app cloud backup and device-to-device transfer are disabled. The offline edition has no INTERNET or location permissions. The network-enabled edition can download map packs and fetch live traffic. When you grant location permission, it can use device location for maps and an active navigation session. Sharing a location is an explicit action that opens another app; that app has its own privacy policy. There are no analytics, ads or accounts.</string>
 
     <!-- About: data sources -->
     <string name="about_osm_name">OpenStreetMap</string>
@@ -166,6 +168,8 @@
     <string name="download_failed_checksum">The downloaded map pack was corrupt. Please try again.</string>
     <string name="download_unavailable_in_build">Map-pack downloads aren\'t available in this build.</string>
     <string name="download_failed_generic">Download failed: %s</string>
+    <string name="map_pack_action_error">The map pack action could not be completed. Your saved places and preferences have not been reset. Try the action again.</string>
+    <string name="map_pack_worker_error">The map pack download could not be completed. Retry to try the download again.</string>
     <string name="settings_map_pack_download_unavailable">Map-pack downloads are available in the standard build.</string>
     <string name="map_pack_retry">Retry</string>
     <string name="settings_map_pack_uninstall">Uninstall map pack</string>
@@ -174,7 +178,7 @@
     <string name="map_pack_uninstalled">Map pack uninstalled</string>
     <string name="map_pack_uninstall_failed">Couldn\'t uninstall the map pack. Try again.</string>
     <string name="nearby_distance_hint_adelaide">Showing distances from Adelaide CBD — device location unavailable</string>
-    <string name="nearby_lookup_error">Couldn\'t look up nearby places. Tap to retry.</string>
+    <string name="nearby_lookup_error">Emergency listings could not be loaded from the offline catalog. Retry to reload the catalog.</string>
 
     <!-- Map coverage banner -->
     <string name="map_demo_pack_banner">Demo map · Adelaide area only</string>
@@ -226,9 +230,9 @@
     <string name="nearby_share_location">Share location</string>
     <string name="nearby_view_on_map">View on map</string>
     <string name="nearby_no_results">No %1$s found nearby</string>
-    <string name="nearby_nearest_hospital">Nearest hospital</string>
+    <string name="nearby_nearest_hospital">Nearest hospital or clinic</string>
     <string name="nearby_nearest_police">Nearest police</string>
-    <string name="nearby_emergency_title">Emergency</string>
+    <string name="nearby_emergency_title">Medical &amp; police listings</string>
     <string name="nearby_categories_title">Find nearby</string>
     <string name="nearby_results_title">Results</string>
     <string name="nearby_distance_meters">%1$.0f m</string>
@@ -236,7 +240,7 @@
     <!-- Category labels -->
     <string name="nearby_cat_fuel">Fuel</string>
     <string name="nearby_cat_ev">EV charging</string>
-    <string name="nearby_cat_hospital">Hospital</string>
+    <string name="nearby_cat_hospital">Hospitals &amp; clinics</string>
     <string name="nearby_cat_pharmacy">Pharmacy</string>
     <string name="nearby_cat_police">Police</string>
     <string name="nearby_cat_fire">Fire station</string>

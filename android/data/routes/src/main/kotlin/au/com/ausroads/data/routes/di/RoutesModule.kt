@@ -18,7 +18,8 @@ object RoutesModule {
     @Singleton
     fun provideDatabase(@ApplicationContext context: Context): RouteHistoryDatabase =
         Room.databaseBuilder(context, RouteHistoryDatabase::class.java, RouteHistoryDatabase.DATABASE_NAME)
-            .fallbackToDestructiveMigration(dropAllTables = true)
+            // Route history is user data: propagate unsupported-version errors,
+            // never replace an unknown database with an empty one.
             .build()
 
     @Provides

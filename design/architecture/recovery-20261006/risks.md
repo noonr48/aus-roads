@@ -1,0 +1,16 @@
+# Risks and discriminators
+| Risk | Likelihood | Impact | Mitigation | Spike needed |
+|---|---|---|---|---|
+| Combined native GLES encoder crash despite isolated pin PASS | M | H | Matching guest vendor BuildId/disassembly and pinned encoder/SDK source; no app lifecycle/renderer/SDK guess or waiver. Source hypothesis is conditional until actual binary/call evidence. | YES, separate bounded question only if binary/source cannot discriminate; Lab1042 native budget exhausted. |
+| Failed clear retry deletes newer successful visit | Confirmed source | H | Temporal supersession of history intents and old-API baseline/candidate regression, unrelated preference preservation. | NO, known mechanism. |
+| Catalog Retry remains a no-op or duplicates stale work | Confirmed source | H | Existing action seam calls real serialized initializer off Main; active retry coalesces, READY/generation publication gates retained. Actual UI kill/recover click proof. | NO. |
+| UI unknown values falsely look like defaults | Confirmed source | M | Show unread/saving state and disable unsafe edits; named controls/actual checked values, no redesign. | NO. |
+| New row validation rejects supported legacy or public asset | M | H | Numeric SQLite type/domain/nullable semantic checks; old-pack optional tables retained; actual healthy public and legacy positive controls. | NO, executable controls available. |
+| Ordinary publisher exception replaces only half a DB/JSON pair | Confirmed source risk | H | Validate before publish; rollback consistent prior pair on ordinary fault; explicitly avoid claiming power-loss multi-file atomicity. | NO; injected replacement faults. |
+| Unknown Room upgrade silently destroys private data | Existing destructive fallback | H | Remove fallback; actual provider unknown-version refusal with raw row readback and both supported pin migrations. Real Pixel baseline read first. | NO. |
+| Async GPS Task never reaches retry / cold no-fix never becomes visible | Confirmed unchanged base source | H | Actual adapter Task completion/failure/cancel tests, monotonic session reference, bounded retry/exhaustion and Stop proof. Offline code/permissions untouched. | NO. |
+| Foreign work or partial historical grades contaminate release | M | H | 74-path adoption plus3 claims; exact leases; fresh whole77+newpaths aggregate diff/coverage; distinct post-check review waves; no unscoped commit. | NO. |
+| Phone upgrade changes signer/flavor or touches real data in a fixture | M | H | Installed readback, same existing roompc signing key without copying it, correct network flavor/arm64, preserving disposable upgrade first. Never run emulator reset tests on Pixel. | NO; read-only qualification first. |
+| Locked phone hides foreground/data acceptance | Observed earlier, recheck | H | Separate authorized preserving upgrade from ordinary-unlock UI gate. Do not bypass lock or call installation a UI/data pass. | NO; owner-only unlock if required. |
+
+No new dependency, database version or persisted identity is planned. Rollbacks are scoped source patches over the retained pre-repair snapshot; never restore the entire adopted dirty tree to old HEAD. Evidence and source control remain local; no external publication is authorized here.

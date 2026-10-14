@@ -184,10 +184,10 @@ private fun NavigationBanner(
             CameraWarningBanner(warning = warning)
         }
 
-        if (awaitingGpsFix) {
-            AcquiringGpsBanner()
-        } else if (gpsLost) {
+        if (gpsLost) {
             GpsLostBanner()
+        } else if (awaitingGpsFix) {
+            AcquiringGpsBanner()
         }
 
         // Maneuver card: high-contrast surface (not a tinted container) so the

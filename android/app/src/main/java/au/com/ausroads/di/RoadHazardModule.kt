@@ -22,5 +22,6 @@ object RoadHazardModule {
     @Singleton
     fun provideRoadHazardSource(
         searchRepository: SearchRepository,
-    ): RoadHazardSource = SearchRoadHazardSource(searchRepository)
+        health: PlacesHealth,
+    ): RoadHazardSource = SearchRoadHazardSource(searchRepository, health)
 }

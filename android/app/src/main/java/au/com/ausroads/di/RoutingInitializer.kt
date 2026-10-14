@@ -1,12 +1,11 @@
 package au.com.ausroads.di
 
 import android.content.Context
-import android.util.Log
 import au.com.ausroads.routing.engine.valhalla.ValhallaRoutingEngine
 import dagger.hilt.android.qualifiers.ApplicationContext
-import java.io.File
 import javax.inject.Inject
 import javax.inject.Singleton
+import kotlinx.coroutines.CancellationException
 
 /**
  * Initializes the Valhalla routing engine from installed routing tiles, if
@@ -23,39 +22,39 @@ import javax.inject.Singleton
 class RoutingInitializer @Inject constructor(
     @ApplicationContext private val context: Context,
     private val routingEngine: ValhallaRoutingEngine,
+    private val health: PlacesHealth,
 ) {
+    @Synchronized
+    @Suppress("TooGenericExceptionCaught") // failed configuration stays explicitly unavailable
     fun initialize() {
-        val tar = resolveRoutingTar()
-        if (tar == null) {
-            Log.i(TAG, "No routing tiles installed; directions unavailable until a routing pack is installed")
-            return
+        try {
+            when (val selected = InstalledPackPaths.routing(context)) {
+                is InstalledPackPaths.RoutingSelection.Available -> {
+                    routingEngine.initialize(selected.file.absolutePath)
+                    // Configuration construction is not a usable-graph or successful-route proof.
+                    health.routingInit(RoutingInitOutcome.CONFIGURED)
+                }
+                InstalledPackPaths.RoutingSelection.Unavailable -> {
+                    routingEngine.invalidate()
+                    health.routingInit(RoutingInitOutcome.UNAVAILABLE)
+                }
+                InstalledPackPaths.RoutingSelection.Rejected -> {
+                    routingEngine.invalidate()
+                    health.routingInit(RoutingInitOutcome.REJECTED)
+                }
+            }
+        } catch (cancelled: CancellationException) {
+            routingEngine.invalidate()
+            throw cancelled
+        } catch (_: Exception) {
+            configurationFailed()
+        } catch (_: LinkageError) {
+            configurationFailed()
         }
-        routingEngine.initialize(tar.absolutePath)
-        Log.i(TAG, "Routing initialized from ${tar.absolutePath} (${tar.length()} bytes)")
     }
 
-    private fun resolveRoutingTar(): File? {
-        val base = File(context.filesDir, MAPPACK_DIR)
-        val conventional = File(base, "routing/$TAR_NAME")
-        if (conventional.isFile && conventional.length() > 0) return conventional
-
-        // Fall back to the latest versioned pack dir's routing component.
-        val latest = base.listFiles()
-            ?.filter { it.isDirectory && it.name.startsWith("v") }
-            ?.maxByOrNull { it.name }
-            ?: return null
-        val candidates = listOf(
-            File(latest, "routing/$TAR_NAME"),
-            File(latest, TAR_NAME),
-        )
-        candidates.firstOrNull { it.isFile && it.length() > 0 }?.let { return it }
-        return File(latest, "routing").listFiles()
-            ?.firstOrNull { it.isFile && it.extension == "tar" && it.length() > 0 }
-    }
-
-    private companion object {
-        private const val TAG = "RoutingInitializer"
-        private const val MAPPACK_DIR = "mappacks/au-sa"
-        private const val TAR_NAME = "valhalla_tiles.tar"
+    private fun configurationFailed() {
+        routingEngine.invalidate()
+        health.routingInit(RoutingInitOutcome.CONFIGURATION_FAILED)
     }
 }

@@ -1,0 +1,5 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="download_queued">Queued — waiting to start</string>
+    <string name="map_pack_cancel_failed">The download could not be cancelled. It may still be waiting or running. Try Cancel again.</string>
+</resources>

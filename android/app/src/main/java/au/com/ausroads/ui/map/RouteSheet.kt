@@ -127,13 +127,13 @@ private fun RouteContent(
 
         if (navigationViewModel != null) {
             val context = LocalContext.current
-            // First-run gate: request location (then notifications on 13+) at the
-            // point of use, so Start never lands on the refusal banner cold.
+            // First-run gate: request location, then notifications on 13+, at use.
+            // Start is not Close: MapScreen hides this sheet by navigation state,
+            // retaining the started route for history and refusal/Dismiss recovery.
             val notificationLauncher = rememberLauncherForActivityResult(
                 ActivityResultContracts.RequestPermission(),
             ) {
                 navigationViewModel.startNavigation(result)
-                onDismiss()
             }
             val locationLauncher = rememberLauncherForActivityResult(
                 ActivityResultContracts.RequestPermission(),
@@ -145,7 +145,6 @@ private fun RouteContent(
                     // permission guard publishes the honest, dismissible
                     // LocationUnavailable banner instead of a silent dead-end.
                     navigationViewModel.startNavigation(result)
-                    onDismiss()
                 }
             }
             Button(
@@ -158,10 +157,7 @@ private fun RouteContent(
                             locationLauncher.launch(Manifest.permission.ACCESS_FINE_LOCATION)
                         needsNotificationPermission(context) ->
                             notificationLauncher.launch(Manifest.permission.POST_NOTIFICATIONS)
-                        else -> {
-                            navigationViewModel.startNavigation(result)
-                            onDismiss()
-                        }
+                        else -> navigationViewModel.startNavigation(result)
                     }
                 },
                 modifier = Modifier.fillMaxWidth(),

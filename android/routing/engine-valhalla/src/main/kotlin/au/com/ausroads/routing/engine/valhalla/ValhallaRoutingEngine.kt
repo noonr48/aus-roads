@@ -21,6 +21,7 @@ import com.valhalla.api.models.RouteManeuver
 import com.valhalla.api.models.RouteRequest as ValhallaRouteRequest
 import com.valhalla.api.models.RouteResponseTrip
 import com.valhalla.api.models.RoutingWaypoint
+import com.valhalla.api.models.ValhallaLongUnits
 import com.valhalla.config.models.ValhallaConfig
 import com.valhalla.valhalla.Valhalla
 import com.valhalla.valhalla.ValhallaResponse
@@ -33,70 +34,48 @@ import javax.inject.Inject
 import javax.inject.Singleton
 
 @Singleton
-class ValhallaRoutingEngine @Inject constructor(
-    @ApplicationContext private val context: Context,
+class ValhallaRoutingEngine internal constructor(
+    private val createValhalla: (String) -> Valhalla,
 ) : RoutingEngine {
+    @Inject
+    constructor(@ApplicationContext context: Context) : this({ tarPath ->
+        configuredValhalla(context, tarPath)
+    })
 
-    // Written on the background routing-init thread (AusRoadsApp.onCreate), read
-    // from route-computation coroutines on other threads. @Volatile makes the
-    // initialised engine visible across threads (ARM has a weak memory model).
+    // Android constructs an actor and reads the SAME config path per native request.
+    // ConfigManager.writeConfig uses writeText, not atomic publication. All creation
+    // (including that write), invalidation and native route calls use this one fence.
+    private val nativeConfigLock = Any()
     @Volatile private var valhalla: Valhalla? = null
-    @Volatile private var tilePath: String? = null
 
-    /**
-     * Initialize with the path to valhalla_tiles.tar.
-     * Called when the routing pack component is available.
-     */
+    /** Configuration readiness only: a usable graph still requires an actual route. */
     fun initialize(tarPath: String) {
-        if (tilePath == tarPath && valhalla != null) return
-        tilePath = tarPath
-
-        // ValhallaConfigManager serializes the Kotlin ValhallaConfig via this Moshi.
-        // Without KotlinJsonAdapterFactory, Moshi cannot reflectively serialize Kotlin
-        // classes and writeConfig() throws, so initialize() must register it.
-        val moshi = Moshi.Builder().add(KotlinJsonAdapterFactory()).build()
-        val config = buildConfig(tarPath)
-        val configFile = ValhallaFile(context, "valhalla.json", context.filesDir)
-        val configManager = ValhallaConfigManager(context, configFile, moshi)
-        configManager.writeConfig(config)
-        valhalla = Valhalla(context, config, configManager, moshi)
+        synchronized(nativeConfigLock) {
+            valhalla = null
+            // No path-only suppression: repaired/replaced bytes may retain the same path.
+            val configured = createValhalla(tarPath)
+            valhalla = configured
+        }
     }
 
-    /**
-     * Build a complete Valhalla config with the given tile_extract.
-     *
-     * Hand-building the config (e.g. `ValhallaConfig().copy(mjolnir = ...)`) omits
-     * nodes Valhalla requires at route time — it fails with errors like
-     * "No such node (mjolnir)" or "No such node (service_limits.isochrone.max_contours)".
-     * valhalla-models ships `ValhallaConfigBuilder`, whose default carries every
-     * required node fully populated. Reach it via reflection and override only the
-     * tile_extract.
-     *
-     * The class lives in the JVM default (unnamed) package in the pinned
-     * valhalla-models 0.0.9, which Kotlin cannot import from a packaged file. NOTE:
-     * it moves to `com.valhalla.config.ValhallaConfigBuilder` in valhalla-models
-     * 0.2.0+ — if the dependency is ever bumped, update [CONFIG_BUILDER_CLASS_NAME].
-     * (A try-FQN-first/fallback scheme was tried and rejected: a stray
-     * com.valhalla.config builder on the classpath produced a config the 0.0.9
-     * native lib could not parse.)
-     */
-    private fun buildConfig(tarPath: String): ValhallaConfig {
-        val builderClass = Class.forName(CONFIG_BUILDER_CLASS_NAME)
-        var builder = builderClass.getDeclaredConstructor().newInstance()
-        builder = builderClass.getMethod("withTileExtract", String::class.java).invoke(builder, tarPath)
-        return builderClass.getMethod("build").invoke(builder) as ValhallaConfig
+    /** Affects future route requests only, not NavigationState/service ownership. */
+    fun invalidate() {
+        synchronized(nativeConfigLock) {
+            valhalla = null
+        }
     }
 
-    override fun isReady(): Boolean = valhalla != null && tilePath != null
+    override fun isReady(): Boolean = valhalla != null
 
     override suspend fun computeRoute(request: RouteRequest): RouteResult =
         withContext(Dispatchers.IO) {
-            val engine = valhalla
-                ?: throw IllegalStateException("Routing engine not initialized; call initialize() first")
-
-            val valhallaRequest = buildValhallaRequest(request)
-            val response = engine.route(valhallaRequest)
-            parseResponse(response)
+            synchronized(nativeConfigLock) {
+                val engine = valhalla
+                    ?: throw IllegalStateException("Routing engine not initialized; call initialize() first")
+                val valhallaRequest = buildValhallaRequest(request)
+                val response = engine.route(valhallaRequest)
+                parseResponse(response)
+            }
         }
 
     private fun buildValhallaRequest(request: RouteRequest): ValhallaRouteRequest {
@@ -171,7 +150,12 @@ class ValhallaRoutingEngine @Inject constructor(
 
         val trip: RouteResponseTrip = routeResponse.trip
         val summary = trip.summary
-        val distanceMeters = summary.length.toInt()
+        // SDK lengths use the response's km/mi units; the domain contract is meters.
+        val metersPerUnit = when (trip.units) {
+            ValhallaLongUnits.kilometers -> METERS_PER_KILOMETER
+            ValhallaLongUnits.miles -> METERS_PER_MILE
+        }
+        val distanceMeters = (summary.length * metersPerUnit).toInt()
         val durationSeconds = summary.time.toInt()
 
         val geometry = mutableListOf<GeoPoint>()
@@ -184,7 +168,7 @@ class ValhallaRoutingEngine @Inject constructor(
                 maneuvers.add(
                     Maneuver(
                         instruction = m.instruction,
-                        lengthMeters = m.length.toInt(),
+                        lengthMeters = (m.length * metersPerUnit).toInt(),
                         durationSeconds = m.time.toInt(),
                         beginShapeIndex = m.beginShapeIndex,
                         streetName = m.streetNames?.firstOrNull(),
@@ -207,6 +191,43 @@ class ValhallaRoutingEngine @Inject constructor(
         // Default/unnamed package in the pinned valhalla-models 0.0.9.
         // Moves to "com.valhalla.config.ValhallaConfigBuilder" in 0.2.0+.
         private const val CONFIG_BUILDER_CLASS_NAME = "ValhallaConfigBuilder"
+        private const val METERS_PER_KILOMETER = 1_000.0
+        private const val METERS_PER_MILE = 1_609.344
+
+        private fun configuredValhalla(context: Context, tarPath: String): Valhalla {
+            // ConfigManager needs Kotlin reflection to serialize the pinned config models.
+            val moshi = Moshi.Builder().add(KotlinJsonAdapterFactory()).build()
+            val config = buildConfig(tarPath)
+            val configFile = ValhallaFile(context, "valhalla.json", context.filesDir)
+            val configManager = ValhallaConfigManager(context, configFile, moshi)
+            configManager.writeConfig(config)
+            return Valhalla(context, config, configManager, moshi)
+        }
+
+        /**
+         * Build a complete Valhalla config with the given tile_extract.
+         *
+         * Hand-building the config (e.g. `ValhallaConfig().copy(mjolnir = ...)`) omits
+         * nodes Valhalla requires at route time — it fails with errors like
+         * "No such node (mjolnir)" or "No such node (service_limits.isochrone.max_contours)".
+         * valhalla-models ships `ValhallaConfigBuilder`, whose default carries every
+         * required node fully populated. Reach it via reflection and override only the
+         * tile_extract.
+         *
+         * The class lives in the JVM default (unnamed) package in the pinned
+         * valhalla-models 0.0.9, which Kotlin cannot import from a packaged file. NOTE:
+         * it moves to `com.valhalla.config.ValhallaConfigBuilder` in valhalla-models
+         * 0.2.0+ — if the dependency is ever bumped, update [CONFIG_BUILDER_CLASS_NAME].
+         * (A try-FQN-first/fallback scheme was tried and rejected: a stray
+         * com.valhalla.config builder on the classpath produced a config the 0.0.9
+         * native lib could not parse.)
+         */
+        private fun buildConfig(tarPath: String): ValhallaConfig {
+            val builderClass = Class.forName(CONFIG_BUILDER_CLASS_NAME)
+            var builder = builderClass.getDeclaredConstructor().newInstance()
+            builder = builderClass.getMethod("withTileExtract", String::class.java).invoke(builder, tarPath)
+            return builderClass.getMethod("build").invoke(builder) as ValhallaConfig
+        }
 
         /**
          * Translate user [RouteOptions] into Valhalla auto-costing options.

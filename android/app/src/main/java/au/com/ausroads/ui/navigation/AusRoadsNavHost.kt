@@ -6,69 +6,75 @@ package au.com.ausroads.ui.navigation
 
 import androidx.annotation.StringRes
 import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.filled.LocationOn
-import androidx.compose.material.icons.filled.NearMe
+import androidx.compose.material.icons.filled.Explore
+import androidx.compose.material.icons.filled.Map
 import androidx.compose.material.icons.filled.Place
 import androidx.compose.material.icons.filled.Settings
-import androidx.compose.ui.graphics.vector.ImageVector
+import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
+import androidx.compose.ui.Modifier
+import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.hilt.navigation.compose.hiltViewModel
 import androidx.navigation.NavHostController
 import androidx.navigation.compose.NavHost
 import androidx.navigation.compose.composable
-import androidx.compose.runtime.Composable
-import androidx.compose.ui.Modifier
 import au.com.ausroads.R
+import au.com.ausroads.feature.navigation.NavigationViewModel
+import au.com.ausroads.feature.search.SearchViewModel
+import au.com.ausroads.feature.traffic.TrafficViewModel
 import au.com.ausroads.routing.engine.RouteOptions
 import au.com.ausroads.ui.about.AboutScreen
+import au.com.ausroads.ui.explore.ExploreScreen
+import au.com.ausroads.ui.explore.MapExploreViewModel
 import au.com.ausroads.ui.map.MapScreen
 import au.com.ausroads.ui.map.RouteHistoryViewModel
+import au.com.ausroads.ui.map.RouteViewModel
 import au.com.ausroads.ui.pins.PinListViewModel
 import au.com.ausroads.ui.pins.PinsScreen
 import au.com.ausroads.ui.settings.SettingsScreen
 import au.com.ausroads.ui.settings.SettingsViewModel
-import au.com.ausroads.feature.search.SearchViewModel
-import au.com.ausroads.feature.traffic.TrafficViewModel
-import au.com.ausroads.feature.navigation.NavigationViewModel
-import au.com.ausroads.ui.map.RouteViewModel
-import au.com.ausroads.ui.nearby.NearbyScreen
 
 sealed class AusRoadsDestination(
     val route: String,
     @StringRes val labelRes: Int,
     val icon: ImageVector,
 ) {
-    data object Map : AusRoadsDestination(
-        route = "map",
-        labelRes = R.string.nav_map,
-        icon = Icons.Filled.LocationOn,
-    )
+    data object Map :
+        AusRoadsDestination(
+            route = "map",
+            labelRes = R.string.nav_map,
+            icon = Icons.Filled.Map,
+        )
 
-    data object Nearby : AusRoadsDestination(
-        route = "nearby",
-        labelRes = R.string.nav_nearby,
-        icon = Icons.Filled.NearMe,
-    )
+    data object Nearby :
+        AusRoadsDestination(
+            route = "nearby",
+            labelRes = R.string.nav_explore,
+            icon = Icons.Filled.Explore,
+        )
 
-    data object Pins : AusRoadsDestination(
-        route = "pins",
-        labelRes = R.string.nav_pins,
-        icon = Icons.Filled.Place,
-    )
+    data object Pins :
+        AusRoadsDestination(
+            route = "pins",
+            labelRes = R.string.nav_pins,
+            icon = Icons.Filled.Place,
+        )
 
-    data object Settings : AusRoadsDestination(
-        route = "settings",
-        labelRes = R.string.nav_settings,
-        icon = Icons.Filled.Settings,
-    )
+    data object Settings :
+        AusRoadsDestination(
+            route = "settings",
+            labelRes = R.string.nav_settings,
+            icon = Icons.Filled.Settings,
+        )
 
-    data object About : AusRoadsDestination(
-        route = "about",
-        labelRes = R.string.about_title,
-        icon = Icons.Filled.Settings, // Not in bottom bar, icon unused
-    )
+    data object About :
+        AusRoadsDestination(
+            route = "about",
+            labelRes = R.string.about_title,
+            icon = Icons.Filled.Settings, // Not in bottom bar, icon unused
+        )
 
     companion object {
         // lazy is REQUIRED: eager initialization here runs during the sealed
@@ -76,12 +82,13 @@ sealed class AusRoadsDestination(
         // initialization completes (JVM super-first rule) -> INSTANCE-null NPE.
         // Plain-JVM unit tests (ResolveStartDestinationTest) exposed this;
         // deferring to first access is safe under any load order.
-        val bottomBarItems: List<AusRoadsDestination> by lazy { listOf(Map, Nearby, Pins, Settings) }
+        val bottomBarItems: List<AusRoadsDestination> by lazy {
+            listOf(Map, Nearby, Pins, Settings)
+        }
 
         /**
-         * Every route with a registered composable(...) destination in
-         * [AusRoadsNavHost]: the tab destinations plus legitimate
-         * full-screen routes (About) excluded from [bottomBarItems].
+         * Every route with a registered composable(...) destination in [AusRoadsNavHost]: the tab
+         * destinations plus legitimate full-screen routes (About) excluded from [bottomBarItems].
          */
         val graphRoutes: Set<String> by lazy {
             setOf(
@@ -102,6 +109,14 @@ fun AusRoadsNavHost(
     modifier: Modifier = Modifier,
     onNavigationActiveChanged: (Boolean) -> Unit = {},
 ) {
+    // Activity-scoped, outside destination entries: one area/selection across tabs.
+    val explorationContext: MapExploreViewModel = hiltViewModel()
+    val mapArea by explorationContext.reference.collectAsState()
+    val selectedPlace by explorationContext.selection.collectAsState()
+    // Same Activity owner as MainActivity's theme reader, never a destination-local replica.
+    val settingsViewModel: SettingsViewModel = hiltViewModel()
+    val settings by settingsViewModel.settings.collectAsState()
+    val settingsStore by settingsViewModel.storeState.collectAsState()
     NavHost(
         navController = navController,
         startDestination = startDestination,
@@ -109,27 +124,26 @@ fun AusRoadsNavHost(
     ) {
         composable(AusRoadsDestination.Map.route) {
             val pinsViewModel: PinListViewModel = hiltViewModel()
-            val settingsViewModel: SettingsViewModel = hiltViewModel()
             val searchViewModel: SearchViewModel = hiltViewModel()
             val trafficViewModel: TrafficViewModel = hiltViewModel()
             val navigationViewModel: NavigationViewModel = hiltViewModel()
             val routeHistoryViewModel: RouteHistoryViewModel = hiltViewModel()
             val routeViewModel: RouteViewModel = hiltViewModel()
-            val settings by settingsViewModel.settings.collectAsState()
             val pins by pinsViewModel.pins.collectAsState()
-            // Honour the TTS toggle: voice guidance previously spoke regardless.
-            LaunchedEffect(settings.ttsEnabled) {
-                navigationViewModel.setTtsEnabled(settings.ttsEnabled)
+            // Initial display defaults are not confirmed guidance preferences.
+            LaunchedEffect(settings.ttsEnabled, settingsStore.hasReadValue) {
+                navigationViewModel.setTtsEnabled(settingsStore.hasReadValue && settings.ttsEnabled)
             }
-            val routeAvoidOptions = RouteOptions(
-                avoidTolls = settings.avoidTolls,
-                avoidUnsealed = settings.avoidUnsealed,
-                avoidFerries = settings.avoidFerries,
-            )
+            val routeAvoidOptions =
+                RouteOptions(
+                    avoidTolls = settings.avoidTolls,
+                    avoidUnsealed = settings.avoidUnsealed,
+                    avoidFerries = settings.avoidFerries,
+                )
             // Seed the routing engine with the persisted avoid-preferences and
             // recompute the active route whenever they change.
-            LaunchedEffect(routeAvoidOptions) {
-                routeViewModel.setOptions(routeAvoidOptions)
+            LaunchedEffect(routeAvoidOptions, settingsStore.hasReadValue) {
+                if (settingsStore.hasReadValue) routeViewModel.setOptions(routeAvoidOptions)
             }
             MapScreen(
                 onOpenSettings = { navController.navigate(AusRoadsDestination.Settings.route) },
@@ -164,10 +178,21 @@ fun AusRoadsNavHost(
                 },
                 camerasEnabled = settings.speedCamerasEnabled,
                 onNavigationActiveChanged = onNavigationActiveChanged,
+                initialCenter = mapArea,
+                requestedPlace = selectedPlace,
+                onPlaceShown = explorationContext::consumeSelection,
+                onMapAreaChanged = explorationContext::updateCenter,
             )
         }
         composable(AusRoadsDestination.Nearby.route) {
-            NearbyScreen()
+            ExploreScreen(
+                reference = mapArea,
+                onShowOnMap = { result ->
+                    explorationContext.openOnMap(result)
+                    // A natural Back returns to this exact discovery state, not an external app.
+                    navController.navigate(AusRoadsDestination.Map.route) { launchSingleTop = true }
+                },
+            )
         }
         composable(AusRoadsDestination.Pins.route) {
             PinsScreen()
@@ -175,6 +200,7 @@ fun AusRoadsNavHost(
         composable(AusRoadsDestination.Settings.route) {
             SettingsScreen(
                 onOpenAbout = { navController.navigate(AusRoadsDestination.About.route) },
+                viewModel = settingsViewModel,
             )
         }
         composable(AusRoadsDestination.About.route) {
@@ -184,15 +210,11 @@ fun AusRoadsNavHost(
 }
 
 /**
- * Maps a live back-stack observation onto a safe NavHost start destination.
+ * Validates legacy explicit destination values; unknown strings fall back to Map.
  *
- * Both form factors derive the start destination from the CURRENT back-stack
- * entry so the app restores wherever the user was. An unregistered route
- * string passed straight through crashes NavHost construction, while baking
- * a real-but-non-tab route (About, absent from the bars) in as the graph root
- * silently changes saveState/back-stack semantics when bar taps pop back up
- * to findStartDestination(). Null or unregistered observations therefore
- * degrade to the Map root.
+ * Normal phone/tablet rendering now uses a STABLE Map graph root and lets NavController restore its
+ * back stack. Recreating the graph root from every current entry breaks the internal
+ * discovery-to-map Back journey, as the actual Android regression test demonstrated.
  */
 fun resolveStartDestination(observedRoute: String?): String =
     if (observedRoute != null && observedRoute in AusRoadsDestination.graphRoutes) {

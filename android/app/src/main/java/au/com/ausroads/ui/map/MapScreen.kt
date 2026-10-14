@@ -42,6 +42,7 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.BookmarkBorder
 import androidx.compose.material.icons.filled.Delete
+import androidx.compose.material.icons.filled.History
 import androidx.compose.material.icons.filled.LocationSearching
 import androidx.compose.material.icons.filled.MyLocation
 import androidx.compose.material.icons.filled.PhotoCamera
@@ -65,6 +66,8 @@ import androidx.compose.material3.rememberModalBottomSheetState
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.SideEffect
+import androidx.compose.runtime.snapshotFlow
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
@@ -77,38 +80,37 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalContext
-import androidx.core.content.ContextCompat
-import androidx.hilt.navigation.compose.hiltViewModel
-import androidx.lifecycle.compose.LocalLifecycleOwner
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.compose.ui.viewinterop.AndroidView
+import androidx.core.content.ContextCompat
+import androidx.hilt.navigation.compose.hiltViewModel
 import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.LifecycleEventObserver
+import androidx.lifecycle.compose.LocalLifecycleOwner
 import au.com.ausroads.R
 import au.com.ausroads.core.model.GeoPoint
 import au.com.ausroads.data.pins.Pin
 import au.com.ausroads.feature.navigation.NavigationState
 import au.com.ausroads.navigation.NavigationSessionBus
 import au.com.ausroads.navigation.NavigationSessionService
+import au.com.ausroads.offline.search.SearchResult
 import au.com.ausroads.offline.search.SpeedCameraPoint
 import au.com.ausroads.routing.engine.RouteOptions
 import au.com.ausroads.traffic.provider.LiveTrafficEvent
+import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 import org.maplibre.android.MapLibre
 import org.maplibre.android.camera.CameraPosition
 import org.maplibre.android.geometry.LatLng
 import org.maplibre.android.maps.MapLibreMap
 import org.maplibre.android.maps.MapView
-import org.maplibre.android.maps.Style
-import java.io.File
-
-private const val STYLE_ASSET = "maptile/style.json"
-private const val MBTILES_ASSET = "maptile/adelaide-test-tiles.mbtiles"
-private const val MBTILES_FILENAME = "adelaide-test-tiles.mbtiles"
 
 private val AdelaideCbd = LatLng(-34.92, 138.62)
 private const val ADELAIDE_ZOOM = 11.0
@@ -118,57 +120,23 @@ private const val MAX_ZOOM = 16.0
 private const val MIN_ZOOM = 3.0
 
 /**
- * Copies the bundled MBTiles from assets to filesDir if not already present,
- * then returns the style JSON with the correct `mbtiles://` absolute path.
- *
- * MapLibre Native's `mbtiles://` protocol requires a real filesystem path
- * (it uses `stat()` internally). Android assets are inside the APK and
- * don't have real paths, so we must copy to filesDir first.
- */
-private fun ensureMbtilesAndStyle(context: Context): String {
-    val mbtilesPath = resolveMbtilesPath(context)
-    android.util.Log.i("MapScreen", "Rendering tiles from $mbtilesPath")
-    val styleJson = context.assets.open(STYLE_ASSET).bufferedReader().readText()
-    return styleJson.replace(
-        "asset://maptile/adelaide-test-tiles.mbtiles",
-        "mbtiles://$mbtilesPath",
-    )
-}
-
-/**
- * Resolves the MBTiles file path to render: a pack installed by the in-app
- * downloader takes precedence; otherwise the bundled Adelaide test tiles are
- * copied into filesDir (MapLibre's `mbtiles://` needs a real filesystem path).
- * The style and glyphs are always loaded from assets — only the tile source is
- * repointed.
- */
-private fun resolveMbtilesPath(context: Context): String {
-    MapPackAvailability.installedPackMbtiles(context)?.let { return it.absolutePath }
-    val outFile = File(context.filesDir, MBTILES_FILENAME)
-    if (!outFile.exists()) {
-        context.assets.open(MBTILES_ASSET).use { input ->
-            outFile.outputStream().use { output -> input.copyTo(output) }
-        }
-    }
-    return outFile.absolutePath
-}
-
-/**
- * Style layer IDs we query for tap-to-identify, in priority order. These map
- * to OpenMapTiles source-layers:
- *  - "poi"          → poi
- *  - "road-label"   → transportation_name
- *  - "place-suburb" → place (class == "suburb")
+ * Style layer IDs we query for tap-to-identify, in priority order. These map to OpenMapTiles
+ * source-layers:
+ * - "poi" → poi
+ * - "road-label" → transportation_name
+ * - "place-suburb" → place (class == "suburb")
  */
 private data class IdentifyLayer(val id: String, val kindRes: Int, val sourceLayer: String)
 
-private val IDENTIFY_LAYERS = listOf(
-    IdentifyLayer("poi", R.string.feature_poi, "poi"),
-    IdentifyLayer("road-label", R.string.feature_road, "transportation_name"),
-    IdentifyLayer("place-suburb", R.string.feature_place, "place"),
-)
+private val IDENTIFY_LAYERS =
+    listOf(
+        IdentifyLayer("poi", R.string.feature_poi, "poi"),
+        IdentifyLayer("road-label", R.string.feature_road, "transportation_name"),
+        IdentifyLayer("place-suburb", R.string.feature_place, "place"),
+    )
 
-@Suppress("LongParameterList")
+@Suppress("LongParameterList", "LongMethod", "CyclomaticComplexMethod")
+@OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun MapScreen(
     onOpenSettings: () -> Unit,
@@ -187,6 +155,10 @@ fun MapScreen(
     onRouteAvoidOptionsChange: (RouteOptions) -> Unit = {},
     camerasEnabled: Boolean = true,
     onNavigationActiveChanged: (Boolean) -> Unit = {},
+    initialCenter: GeoPoint? = null,
+    requestedPlace: SearchResult? = null,
+    onPlaceShown: (SearchResult) -> Unit = {},
+    onMapAreaChanged: (Double, Double) -> Unit = { _, _ -> },
     modifier: Modifier = Modifier,
 ) {
     val context = LocalContext.current
@@ -199,7 +171,7 @@ fun MapScreen(
     val installedPack by packStateViewModel.installed.collectAsState()
     val hasBundledPack = remember(context) { MapPackAvailability.hasBundledPack(context) }
     val hasPack = installedPack != null || hasBundledPack
-    val usingBundledTiles = installedPack == null && hasBundledPack
+    var usingBundledTiles by remember { mutableStateOf(installedPack == null && hasBundledPack) }
 
     if (!hasPack) {
         NoMapPackPlaceholder(
@@ -209,51 +181,9 @@ fun MapScreen(
         return
     }
 
-    MapScreenContent(
-        pins = pins,
-        onSavePin = onSavePin,
-        onDeletePin = onDeletePin,
-        reverseGeocode = reverseGeocode,
-        showAttribution = showAttribution,
-        searchViewModel = searchViewModel,
-        trafficViewModel = trafficViewModel,
-        trafficEnabled = trafficEnabled,
-        navigationViewModel = navigationViewModel,
-        routeHistoryViewModel = routeHistoryViewModel,
-        routeViewModel = routeViewModel,
-        routeAvoidOptions = routeAvoidOptions,
-        onRouteAvoidOptionsChange = onRouteAvoidOptionsChange,
-        camerasEnabled = camerasEnabled,
-        onNavigationActiveChanged = onNavigationActiveChanged,
-        usingBundledTiles = usingBundledTiles,
-        modifier = modifier,
-    )
-}
-
-@Suppress("LongParameterList", "LongMethod", "CyclomaticComplexMethod")
-@OptIn(ExperimentalMaterial3Api::class)
-@Composable
-private fun MapScreenContent(
-    pins: List<Pin>,
-    onSavePin: (Double, Double, String, String, (Pin) -> Unit) -> Unit,
-    onDeletePin: (Pin) -> Unit,
-    reverseGeocode: suspend (Double, Double) -> String?,
-    showAttribution: Boolean,
-    usingBundledTiles: Boolean,
-    searchViewModel: au.com.ausroads.feature.search.SearchViewModel?,
-    trafficViewModel: au.com.ausroads.feature.traffic.TrafficViewModel?,
-    trafficEnabled: Boolean,
-    navigationViewModel: au.com.ausroads.feature.navigation.NavigationViewModel?,
-    routeHistoryViewModel: RouteHistoryViewModel?,
-    routeViewModel: RouteViewModel?,
-    routeAvoidOptions: RouteOptions,
-    onRouteAvoidOptionsChange: (RouteOptions) -> Unit,
-    camerasEnabled: Boolean,
-    onNavigationActiveChanged: (Boolean) -> Unit,
-    modifier: Modifier = Modifier,
-) {
+    // Keep content/domain/service ownership mounted while assets/styles are prepared.
+    // No second 22-parameter forwarding component or readiness-gated state lifetime.
     val lifecycleOwner = LocalLifecycleOwner.current
-    val context = LocalContext.current
     val scope = rememberCoroutineScope()
     val snackbarHostState = remember { SnackbarHostState() }
 
@@ -275,19 +205,93 @@ private fun MapScreenContent(
     }
 
     // Traffic overlay on map (v0.2)
-    val trafficEvents: List<LiveTrafficEvent> = if (trafficEnabled && trafficViewModel != null) {
-        trafficViewModel.events.collectAsState().value
-    } else {
-        emptyList()
-    }
+    val trafficEvents: List<LiveTrafficEvent> =
+        if (trafficEnabled && trafficViewModel != null) {
+            trafficViewModel.events.collectAsState().value
+        } else {
+            emptyList()
+        }
 
     var mapView by remember { mutableStateOf<MapView?>(null) }
+    var rawMap by remember { mutableStateOf<MapLibreMap?>(null) }
     var mapLibreMap by remember { mutableStateOf<MapLibreMap?>(null) }
+    var overlaysDetached by remember { mutableStateOf(true) }
+    var mapConfigured by remember { mutableStateOf(false) }
+    var preparingMap by remember { mutableStateOf(true) }
+    var mapAssetError by remember { mutableStateOf(false) }
+    var mapAssetRetry by remember { mutableStateOf(0) }
+    val assetPreparer = remember(context) { MapAssetPreparer(context.applicationContext) }
+    val currentInitialCenter = rememberUpdatedState(initialCenter)
+    var pendingSearchPlace by remember { mutableStateOf<SearchResult?>(null) }
     var selectedFeature by remember { mutableStateOf<IdentifiedFeature?>(null) }
+    var highlightedPlace by remember { mutableStateOf<SearchResult?>(null) }
+    val currentAreaCallback = rememberUpdatedState(onMapAreaChanged)
     var selectedTrafficEvent by remember { mutableStateOf<LiveTrafficEvent?>(null) }
     var selectedPin by remember { mutableStateOf<Pin?>(null) }
     var pendingDrop by remember { mutableStateOf<LatLng?>(null) }
     var showRouteHistory by remember { mutableStateOf(false) }
+
+    // Acknowledge the frame actually applied, not a later mutation of mapLibreMap.
+    // Reading live state inside SideEffect can certify detachment while this frame
+    // still owns the old overlays, then skip their remount on the same native map.
+    val frameMap = mapLibreMap
+    SideEffect { overlaysDetached = frameMap == null }
+    LaunchedEffect(rawMap, installedPack, mapAssetRetry) {
+        val map = rawMap ?: return@LaunchedEffect
+        val selectedPack = installedPack // freeze the requested adoption identity before IO.
+        preparingMap = true
+        mapAssetError = false
+        if (mapLibreMap != null) {
+            overlaysDetached = false
+            mapLibreMap = null
+        }
+        var assetsReady = false
+        var preparationStep = "asset-prepare"
+        // One recovery boundary covers file, native-style and camera/publication failures;
+        // cancellation still propagates, and every ordinary failure names its exact step.
+        @Suppress("TooGenericExceptionCaught")
+        try {
+            val prepared = withContext(Dispatchers.IO) { assetPreparer.prepare(selectedPack) }
+            packStateViewModel.recordAssets(true)
+            assetsReady = true
+            preparationStep = "overlay-frame-ack"
+            snapshotFlow { overlaysDetached }.first { it }
+            preparationStep = "native-style-load"
+            map.awaitPreparedStyle(prepared.json)
+            // awaitPreparedStyle returns to its caller's dispatcher. Native camera and
+            // projection calls must own Android Main even under a custom effect context.
+            withContext(Dispatchers.Main.immediate) {
+                preparationStep = "camera-configuration"
+                if (!mapConfigured) {
+                    configureMap(map, currentInitialCenter.value)
+                    mapConfigured = true
+                }
+                usingBundledTiles = prepared.usingBundled
+                preparationStep = "area-camera-publication"
+                map.cameraPosition.target?.let {
+                    currentAreaCallback.value(it.latitude, it.longitude)
+                    if (currentCamerasEnabled.value) {
+                        val halfSpan = map.projection.visibleRegion.latLngBounds.latitudeSpan / 2.0 * 111_320.0
+                        camerasViewModel.onViewportChanged(it.latitude, it.longitude, halfSpan)
+                    }
+                }
+                mapLibreMap = map
+                preparingMap = false
+                packStateViewModel.recordStyle(true)
+            }
+        } catch (error: CancellationException) {
+            throw error
+        } catch (error: Exception) {
+            // Existing fixed-cardinality persistent health remains authoritative; this
+            // bounded local witness disambiguates its failed boundary without private payloads.
+            android.util.Log.e("MapPreparation", "component=map seam=prepare step=$preparationStep " +
+                "assets_ready=$assetsReady class=${error.javaClass.simpleName}")
+            if (assetsReady) packStateViewModel.recordStyle(false)
+            else packStateViewModel.recordAssets(false)
+            mapAssetError = true
+            preparingMap = false
+        }
+    }
 
     // Location permission + live fix (drives the blue dot and the My Location FAB).
     // The `offline` flavor strips location from the manifest by design, so the whole
@@ -296,8 +300,10 @@ private fun MapScreenContent(
     var hasLocationPermission by remember {
         mutableStateOf(
             locationAvailable &&
-                ContextCompat.checkSelfPermission(context, Manifest.permission.ACCESS_FINE_LOCATION)
-                == PackageManager.PERMISSION_GRANTED,
+                ContextCompat.checkSelfPermission(
+                    context,
+                    Manifest.permission.ACCESS_FINE_LOCATION,
+                ) == PackageManager.PERMISSION_GRANTED
         )
     }
     val userLocation = rememberUserLocation(hasLocationPermission)
@@ -313,12 +319,11 @@ private fun MapScreenContent(
             unavailableMessage = context.getString(R.string.map_location_unavailable),
         )
     }
-    val permissionLauncher = rememberLauncherForActivityResult(
-        ActivityResultContracts.RequestPermission(),
-    ) { granted ->
-        hasLocationPermission = granted
-        if (granted) recenter()
-    }
+    val permissionLauncher =
+        rememberLauncherForActivityResult(ActivityResultContracts.RequestPermission()) { granted ->
+            hasLocationPermission = granted
+            if (granted) recenter()
+        }
     val onMyLocation: () -> Unit = {
         if (hasLocationPermission) recenter()
         else permissionLauncher.launch(Manifest.permission.ACCESS_FINE_LOCATION)
@@ -357,8 +362,7 @@ private fun MapScreenContent(
             when {
                 navState is NavigationState.Idle -> savedForSession = false
                 navState is NavigationState.Navigating && !savedForSession -> {
-                    val result =
-                        (routeViewModel?.routeState?.value as? RouteUiState.Active)?.result
+                    val result = (routeViewModel?.routeState?.value as? RouteUiState.Active)?.result
                     if (result != null && result.geometry.isNotEmpty()) {
                         savedForSession = true
                         val origin = result.geometry.first()
@@ -384,6 +388,12 @@ private fun MapScreenContent(
     val navState = navigationViewModel?.state?.collectAsState()?.value
     val navigationActive =
         navState is NavigationState.Navigating || navState is NavigationState.Recalculating
+    val searchText = searchViewModel?.query?.collectAsState()?.value.orEmpty()
+    val drawCameras = cameraSearchVisibility(camerasEnabled, navigationActive, searchText)
+    val currentDrawCameras = rememberUpdatedState(drawCameras)
+    LaunchedEffect(drawCameras) {
+        if (!drawCameras) camerasViewModel.select(null)
+    }
     DisposableEffect(navigationViewModel, navigationActive) {
         if (navigationActive) {
             NavigationSessionService.start(context)
@@ -393,9 +403,10 @@ private fun MapScreenContent(
         onDispose { NavigationSessionService.stop(context) }
     }
     // The FGS notification's Stop action routes through the session bus.
-    LaunchedEffect(navigationViewModel) {
+    LaunchedEffect(navigationViewModel, routeViewModel) {
         NavigationSessionBus.stopRequests.collect {
             navigationViewModel?.stopNavigation()
+            routeViewModel?.clearRoute()
         }
     }
     LaunchedEffect(navigationActive) {
@@ -406,26 +417,33 @@ private fun MapScreenContent(
     // Re-centres only when the fix leaves a ~20 m dead band so a 1 Hz GPS
     // stream cannot fight the user's pan gesture or spam camera animations.
     var lastFollowTarget by remember { mutableStateOf<LatLng?>(null) }
-    LaunchedEffect(navigationActive, userLocation.value) {
+    LaunchedEffect(navigationActive, userLocation.value, mapLibreMap) {
         val fix = userLocation.value ?: return@LaunchedEffect
         if (!navigationActive) {
             lastFollowTarget = null
             return@LaunchedEffect
         }
+        val readyMap = mapLibreMap ?: return@LaunchedEffect
         val fixPoint = LatLng(fix.latitude, fix.longitude)
         val last = lastFollowTarget
-        val movedFarEnough = last == null || run {
-            val latMeters = Math.abs(last.latitude - fixPoint.latitude) * 111_320.0
-            val lonMeters = Math.abs(last.longitude - fixPoint.longitude) *
-                111_320.0 * Math.cos(Math.toRadians(fixPoint.latitude))
-            latMeters + lonMeters > 20.0
-        }
+        val movedFarEnough =
+            last == null ||
+                run {
+                    val latMeters = Math.abs(last.latitude - fixPoint.latitude) * 111_320.0
+                    val lonMeters =
+                        Math.abs(last.longitude - fixPoint.longitude) *
+                            111_320.0 *
+                            Math.cos(Math.toRadians(fixPoint.latitude))
+                    latMeters + lonMeters > 20.0
+                }
         if (movedFarEnough) {
             lastFollowTarget = fixPoint
-            mapLibreMap?.animateCamera(
-                org.maplibre.android.camera.CameraUpdateFactory.newLatLng(fixPoint),
-                900,
-            )
+            withContext(Dispatchers.Main.immediate) {
+                readyMap.animateCamera(
+                    org.maplibre.android.camera.CameraUpdateFactory.newLatLng(fixPoint),
+                    900,
+                )
+            }
         }
     }
 
@@ -433,8 +451,10 @@ private fun MapScreenContent(
     // and falling back to the current map centre when no fix is available.
     val startDirectionsTo: (Double, Double) -> Unit = startDirections@{ lat, lon ->
         val vm = routeViewModel ?: return@startDirections
-        val originLat = userLocation.value?.latitude ?: mapLibreMap?.cameraPosition?.target?.latitude
-        val originLon = userLocation.value?.longitude ?: mapLibreMap?.cameraPosition?.target?.longitude
+        val originLat =
+            userLocation.value?.latitude ?: mapLibreMap?.cameraPosition?.target?.latitude
+        val originLon =
+            userLocation.value?.longitude ?: mapLibreMap?.cameraPosition?.target?.longitude
         if (originLat != null && originLon != null) {
             vm.setOrigin(GeoPoint(longitude = originLon, latitude = originLat))
         }
@@ -448,32 +468,35 @@ private fun MapScreenContent(
                 MapLibre.getInstance(ctx)
                 MapView(ctx).also { mv ->
                     mv.onCreate(null)
-                    mv.getMapAsync { m ->
-                        val styleJson = ensureMbtilesAndStyle(ctx)
-                        m.setStyle(Style.Builder().fromJson(styleJson)) {
-                            configureMap(m)
-                            // Publish the map only once the style is ready, so overlay
-                            // effects (pins, user dot) that need `map.style` add their
-                            // layers reliably — including for pins present at launch.
-                            mapLibreMap = m
-                            // Seed the camera layer for the default Adelaide framing.
-                            if (camerasEnabled) {
-                                camerasViewModel.onViewportChanged(
-                                    AdelaideCbd.latitude,
-                                    AdelaideCbd.longitude,
-                                    5_000.0,
-                                )
-                            }
-                        }
+                    mapView = mv // getMapAsync may complete inline; establish ownership first.
+                    mv.getMapAsync { map ->
+                        if (mapView === mv) rawMap = map
                     }
-                    mapView = mv
                 }
             },
             update = { /* lifecycle is forwarded via DisposableEffect below */ },
         )
 
+        if (preparingMap || mapAssetError) {
+            Surface(
+                modifier = Modifier.align(Alignment.Center).padding(24.dp),
+                shape = RoundedCornerShape(16.dp),
+                tonalElevation = 6.dp,
+            ) {
+                Column(Modifier.padding(16.dp), horizontalAlignment = Alignment.CenterHorizontally) {
+                    Text(stringResource(if (mapAssetError) R.string.map_load_error else R.string.map_loading))
+                    if (mapAssetError) {
+                        TextButton(onClick = { mapAssetRetry++ }) { Text(stringResource(R.string.explore_retry)) }
+                    } else {
+                        CircularProgressIndicator(Modifier.padding(top = 12.dp).size(24.dp))
+                    }
+                }
+            }
+        }
+
         // Saved pins + live user-location layers (manage MapLibre layers, no UI)
         PinsMapOverlay(pins = pins, mapLibreMap = mapLibreMap)
+        SelectedPlaceOverlay(place = highlightedPlace, map = mapLibreMap)
         UserLocationOverlay(
             latitude = userLocation.value?.latitude,
             longitude = userLocation.value?.longitude,
@@ -487,12 +510,8 @@ private fun MapScreenContent(
         // Coverage banner: when rendering the bundled Adelaide demo tiles (no full
         // pack downloaded), make the limited extent explicit instead of silent.
         // Sits just below the search bar so it doesn't collide with it.
-        if (usingBundledTiles) {
-            DemoCoverageBanner(
-                modifier = Modifier
-                    .align(Alignment.TopCenter)
-                    .padding(top = 72.dp),
-            )
+        if (usingBundledTiles && searchViewModel == null) {
+            DemoCoverageBanner(modifier = Modifier.align(Alignment.TopCenter).padding(top = 8.dp))
         }
 
         // My Location FAB — recenters on the live fix, requests permission if
@@ -502,55 +521,56 @@ private fun MapScreenContent(
             MyLocationFab(
                 onClick = onMyLocation,
                 isLocated = userLocation.value != null,
-                modifier = Modifier
-                    .align(Alignment.BottomEnd)
-                    .padding(bottom = 56.dp, end = 16.dp),
+                modifier = Modifier.align(Alignment.BottomEnd).padding(bottom = 56.dp, end = 16.dp),
             )
         }
 
         if (!navigationActive) {
             SnackbarHost(
                 hostState = snackbarHostState,
-                modifier = Modifier
-                    .align(Alignment.BottomCenter)
-                    .padding(bottom = 72.dp),
+                modifier = Modifier.align(Alignment.BottomCenter).padding(bottom = 72.dp),
             )
         }
 
         // Search overlay (v0.1.2)
-        if (searchViewModel != null) {
+        if (searchViewModel != null && !navigationActive) {
             au.com.ausroads.feature.search.SearchOverlay(
                 viewModel = searchViewModel,
+                mapReference = initialCenter,
                 onResultSelected = { result ->
-                    mapLibreMap?.animateCamera(
-                        org.maplibre.android.camera.CameraUpdateFactory.newLatLngZoom(
-                            LatLng(result.latitude, result.longitude),
-                            12.0,
-                        ),
-                        1000,
-                    )
-                    // Set route destination from search result
-                    if (routeViewModel != null) {
-                        val camera = mapLibreMap?.cameraPosition?.target
-                        if (camera != null) {
-                            routeViewModel.setOrigin(GeoPoint(longitude = camera.longitude, latitude = camera.latitude))
+                    highlightedPlace = result
+                    selectedFeature = result.asIdentifiedFeature(context)
+                    pendingSearchPlace = result // readiness does not discard an explicit selection.
+                    // Selection means inspect a place, not start calculating a route.
+                },
+                modifier = Modifier.align(Alignment.TopCenter),
+                coverageHint =
+                    if (usingBundledTiles) context.getString(R.string.map_demo_pack_banner)
+                    else null,
+                statusSlot = {
+                    if (drawCameras && camerasState.queryFailed) {
+                        Row(
+                            Modifier.fillMaxWidth().padding(horizontal = 12.dp),
+                            verticalAlignment = Alignment.CenterVertically,
+                        ) {
+                            Text(
+                                context.getString(R.string.map_cameras_error),
+                                Modifier.weight(1f),
+                                style = MaterialTheme.typography.bodySmall,
+                                color = MaterialTheme.colorScheme.error,
+                            )
+                            androidx.compose.material3.TextButton(onClick = camerasViewModel::retry) {
+                                Text(context.getString(R.string.map_cameras_retry))
+                            }
                         }
-                        routeViewModel.setDestination(
-                            GeoPoint(longitude = result.longitude, latitude = result.latitude),
+                    }
+                    if (trafficEnabled && trafficViewModel != null) {
+                        au.com.ausroads.feature.traffic.TrafficStatusPill(
+                            viewModel = trafficViewModel,
+                            modifier = Modifier.padding(start = 12.dp, bottom = 8.dp),
                         )
                     }
                 },
-                modifier = Modifier.align(Alignment.TopCenter),
-            )
-        }
-
-        // Traffic status pill (v0.2)
-        if (trafficEnabled && trafficViewModel != null) {
-            au.com.ausroads.feature.traffic.TrafficStatusPill(
-                viewModel = trafficViewModel,
-                modifier = Modifier
-                    .align(Alignment.TopEnd)
-                    .padding(top = 8.dp, end = 16.dp),
             )
         }
 
@@ -560,7 +580,7 @@ private fun MapScreenContent(
         }
 
         // Speed-camera layer (v1.1): pack-driven, offline, toggleable.
-        if (camerasEnabled) {
+        if (drawCameras) {
             CamerasMapOverlay(cameras = camerasState.cameras, mapLibreMap = mapLibreMap)
         }
 
@@ -585,7 +605,9 @@ private fun MapScreenContent(
         // Route result sheet
         if (routeViewModel != null) {
             val route = (routeState as? RouteUiState.Active)?.result
-            if (route != null) {
+            // Keep the exact started route until End/Stop; a refused Start returns
+            // to this same preview only when its honest banner is dismissed.
+            if (route != null && (navState == null || navState is NavigationState.Idle)) {
                 RouteSheet(
                     result = route,
                     onDismiss = { routeViewModel.clearRoute() },
@@ -596,15 +618,44 @@ private fun MapScreenContent(
             }
         }
 
-        // Route history button
+        // History belongs to the map's lower tool row, never over the search input.
         if (routeHistoryViewModel != null && !navigationActive) {
-            Button(
-                onClick = { showRouteHistory = true },
-                modifier = Modifier
-                    .align(Alignment.TopStart)
-                    .padding(top = 8.dp, start = 16.dp),
+            Surface(
+                modifier =
+                    Modifier.align(Alignment.BottomStart).padding(bottom = 48.dp, start = 16.dp),
+                shape = RoundedCornerShape(18.dp),
+                shadowElevation = 4.dp,
+                color = MaterialTheme.colorScheme.surface,
             ) {
-                Text(stringResource(R.string.map_history_button))
+                Row(
+                    Modifier.padding(horizontal = 4.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                ) {
+                    TextButton(onClick = { showRouteHistory = true }) {
+                        Icon(
+                            Icons.Default.History,
+                            contentDescription = null,
+                            modifier = Modifier.size(18.dp),
+                        )
+                        Text(
+                            stringResource(R.string.map_history_button),
+                            modifier = Modifier.padding(start = 6.dp),
+                        )
+                    }
+                    if (camerasEnabled && camerasState.cameras.isNotEmpty()) {
+                        TextButton(onClick = onOpenSettings) {
+                            Icon(
+                                Icons.Default.PhotoCamera,
+                                contentDescription = null,
+                                modifier = Modifier.size(16.dp),
+                            )
+                            Text(
+                                stringResource(R.string.map_cameras_layer),
+                                modifier = Modifier.padding(start = 6.dp),
+                            )
+                        }
+                    }
+                }
             }
         }
 
@@ -615,8 +666,12 @@ private fun MapScreenContent(
                 onRouteSelected = { entity ->
                     if (routeViewModel != null) {
                         routeViewModel.clearRoute()
-                        routeViewModel.setOrigin(GeoPoint(longitude = entity.originLon, latitude = entity.originLat))
-                        routeViewModel.setDestination(GeoPoint(longitude = entity.destLon, latitude = entity.destLat))
+                        routeViewModel.setOrigin(
+                            GeoPoint(longitude = entity.originLon, latitude = entity.originLat)
+                        )
+                        routeViewModel.setDestination(
+                            GeoPoint(longitude = entity.destLon, latitude = entity.destLat)
+                        )
                     }
                     showRouteHistory = false
                 },
@@ -634,16 +689,19 @@ private fun MapScreenContent(
             ) {
                 FeatureSheetBody(
                     feature = feature,
-                    onNavigate = if (routeViewModel != null) { lat, lon ->
-                        startDirectionsTo(lat, lon)
-                        selectedFeature = null
-                    } else null,
+                    onNavigate =
+                        if (routeViewModel != null)
+                            { lat, lon ->
+                                startDirectionsTo(lat, lon)
+                                selectedFeature = null
+                            }
+                        else null,
                     onSave = { lat, lon ->
                         val name = feature.name
                         onSavePin(lat, lon, name, PIN_SAVE_COLOR) { saved ->
                             scope.launch {
                                 snackbarHostState.showSnackbar(
-                                    context.getString(R.string.map_pin_saved, saved.name),
+                                    context.getString(R.string.map_pin_saved, saved.name)
                                 )
                             }
                         }
@@ -664,7 +722,7 @@ private fun MapScreenContent(
 
         // Speed-camera detail sheet
         val selectedCamera = camerasState.selected
-        if (selectedCamera != null) {
+        if (selectedCamera != null && drawCameras) {
             CameraDetailSheet(
                 camera = selectedCamera,
                 onDismiss = { camerasViewModel.select(null) },
@@ -691,11 +749,12 @@ private fun MapScreenContent(
                 onSave = { name, color ->
                     onSavePin(drop.latitude, drop.longitude, name, color) { saved ->
                         scope.launch {
-                            val result = snackbarHostState.showSnackbar(
-                                message = context.getString(R.string.map_pin_saved, saved.name),
-                                actionLabel = context.getString(R.string.action_undo),
-                                duration = SnackbarDuration.Short,
-                            )
+                            val result =
+                                snackbarHostState.showSnackbar(
+                                    message = context.getString(R.string.map_pin_saved, saved.name),
+                                    actionLabel = context.getString(R.string.action_undo),
+                                    duration = SnackbarDuration.Short,
+                                )
                             if (result == SnackbarResult.ActionPerformed) onDeletePin(saved)
                         }
                     }
@@ -723,7 +782,7 @@ private fun MapScreenContent(
                     selectedPin = null
                     scope.launch {
                         snackbarHostState.showSnackbar(
-                            context.getString(R.string.map_pin_deleted, pin.name),
+                            context.getString(R.string.map_pin_deleted, pin.name)
                         )
                     }
                 },
@@ -731,63 +790,90 @@ private fun MapScreenContent(
         }
     }
 
+    LaunchedEffect(pendingSearchPlace, mapLibreMap) {
+        val place = pendingSearchPlace ?: return@LaunchedEffect
+        val map = mapLibreMap ?: return@LaunchedEffect
+        withContext(Dispatchers.Main.immediate) {
+            map.animateCamera(
+                org.maplibre.android.camera.CameraUpdateFactory.newLatLngZoom(
+                    LatLng(place.latitude, place.longitude), 15.0,
+                ), 700,
+            )
+            pendingSearchPlace = null
+        }
+    }
+
+    // An Explore/Essentials selection waits for the real style before crossing into the map.
+    LaunchedEffect(requestedPlace, mapLibreMap) {
+        val place = requestedPlace ?: return@LaunchedEffect
+        val map = mapLibreMap ?: return@LaunchedEffect
+        withContext(Dispatchers.Main.immediate) {
+            highlightedPlace = place
+            selectedFeature = place.asIdentifiedFeature(context)
+            map.animateCamera(
+                org.maplibre.android.camera.CameraUpdateFactory.newLatLngZoom(
+                    LatLng(place.latitude, place.longitude),
+                    15.0,
+                ),
+                700,
+            )
+            onPlaceShown(place)
+        }
+    }
+
     // Register map gesture listeners ONCE per map instance. Reading the live
     // pin/traffic lists via rememberUpdatedState avoids re-registering (and thus
     // stacking + leaking) listeners every time those lists change.
-    LaunchedEffect(mapLibreMap) {
-        val m = mapLibreMap ?: return@LaunchedEffect
-        m.addOnMapClickListener { latLng ->
-            val screenPoint = m.projection.toScreenLocation(latLng)
-            // 1) Saved pins take priority. Use asString (not toString, which keeps
-            // the surrounding JSON quotes and breaks the Long parse).
-            val pinHits = m.queryRenderedFeatures(screenPoint, PINS_POINTS_LAYER)
-            val pinId = pinHits.firstOrNull()?.properties()?.get("id")
-                ?.takeIf { !it.isJsonNull }?.asString?.toLongOrNull()
-            if (pinId != null) {
-                selectedPin = currentPins.value.firstOrNull { it.id == pinId }
-                return@addOnMapClickListener true
+    DisposableEffect(mapLibreMap) {
+        val map = mapLibreMap ?: return@DisposableEffect onDispose { }
+        val click = MapLibreMap.OnMapClickListener { latLng ->
+            val point = map.projection.toScreenLocation(latLng)
+            // Saved pins → cameras → traffic → labelled features, with live lists.
+            val pinHit = map.queryRenderedFeatures(point, PINS_POINTS_LAYER).firstOrNull()
+            if (pinHit != null) {
+                val pinId = pinHit.properties()?.get("id")?.takeIf { it.isJsonPrimitive }
+                    ?.asString?.toLongOrNull()
+                selectedPin = pinId?.let { id -> currentPins.value.firstOrNull { it.id == id } }
+                // A stale/malformed native pin is still a pin hit, not a different
+                // feature's Save/create action. Only the current matching row opens.
+                return@OnMapClickListener true
             }
-            // Speed-camera markers (id format matches CamerasMapOverlay's features)
-            val cameraHits = m.queryRenderedFeatures(screenPoint, "cameras-points")
-            val cameraId = cameraHits.firstOrNull()?.properties()?.get("id")
-                ?.takeIf { !it.isJsonNull }?.asString
+            val cameraId = if (currentDrawCameras.value) {
+                map.queryRenderedFeatures(point, "cameras-points")
+                    .firstOrNull()?.properties()?.get("id")?.takeIf { !it.isJsonNull }?.asString
+            } else null
             if (cameraId != null) {
-                camerasViewModel.select(
-                    currentCameras.value.firstOrNull {
-                        "%.6f,%.6f".format(java.util.Locale.US, it.latitude, it.longitude) == cameraId
-                    },
-                )
-                return@addOnMapClickListener true
+                camerasViewModel.select(currentCameras.value.firstOrNull { it.mapFeatureId() == cameraId })
+                return@OnMapClickListener true
             }
-            // 2) Traffic features (asString, not toString — same JSON-quote pitfall)
-            val trafficHits = m.queryRenderedFeatures(screenPoint, "traffic-points")
-            val hitId = trafficHits.firstOrNull()?.properties()?.get("id")
-                ?.takeIf { !it.isJsonNull }?.asString
-            if (hitId != null) {
-                selectedTrafficEvent = currentTrafficEvents.value.firstOrNull { it.primaryKey == hitId }
-                return@addOnMapClickListener true
+            val trafficId = map.queryRenderedFeatures(point, "traffic-points")
+                .firstOrNull()?.properties()?.get("id")?.takeIf { !it.isJsonNull }?.asString
+            if (trafficId != null) {
+                selectedTrafficEvent = currentTrafficEvents.value.firstOrNull { it.primaryKey == trafficId }
+                return@OnMapClickListener true
             }
-            // 3) Labelled map features (road / suburb / POI)
-            val hit = identifyFeature(context, m, latLng)
-            if (hit != null) selectedFeature = hit
+            identifyFeature(context, map, latLng)?.let { selectedFeature = it }
             false
         }
-        m.addOnMapLongClickListener { latLng ->
+        val longClick = MapLibreMap.OnMapLongClickListener { latLng ->
             pendingDrop = latLng
             true
         }
-        // Speed-camera viewport refresh: query at rest, not during gestures,
-        // and only while the layer is toggled on.
-        m.addOnCameraIdleListener {
-            if (!currentCamerasEnabled.value) return@addOnCameraIdleListener
-            val target = m.cameraPosition.target ?: return@addOnCameraIdleListener
-            val latSpanDegrees = m.projection.visibleRegion.latLngBounds.latitudeSpan
-            val halfSpanMeters = latSpanDegrees / 2.0 * 111_320.0
-            camerasViewModel.onViewportChanged(
-                target.latitude,
-                target.longitude,
-                halfSpanMeters,
-            )
+        val idle = MapLibreMap.OnCameraIdleListener {
+            val target = map.cameraPosition.target ?: return@OnCameraIdleListener
+            currentAreaCallback.value(target.latitude, target.longitude)
+            if (currentCamerasEnabled.value) {
+                val halfSpan = map.projection.visibleRegion.latLngBounds.latitudeSpan / 2.0 * 111_320.0
+                camerasViewModel.onViewportChanged(target.latitude, target.longitude, halfSpan)
+            }
+        }
+        map.addOnMapClickListener(click)
+        map.addOnMapLongClickListener(longClick)
+        map.addOnCameraIdleListener(idle)
+        onDispose {
+            map.removeOnMapClickListener(click)
+            map.removeOnMapLongClickListener(longClick)
+            map.removeOnCameraIdleListener(idle)
         }
     }
 
@@ -807,6 +893,7 @@ private fun MapScreenContent(
             lifecycleOwner.lifecycle.removeObserver(observer)
             mapView?.onDestroy()
             mapView = null
+            rawMap = null
             mapLibreMap = null
         }
     }
@@ -815,20 +902,28 @@ private fun MapScreenContent(
     // as the MapLibre quickstart requires. onLowMemory was never wired before.
     DisposableEffect(mapView) {
         val mv = mapView
-        @Suppress("DEPRECATION") // memory-pressure constants/onLowMemory; alternatives are also deprecated
-        val callbacks = object : ComponentCallbacks2 {
-            override fun onTrimMemory(level: Int) {
-                if (level >= ComponentCallbacks2.TRIM_MEMORY_RUNNING_LOW) mv?.onLowMemory()
+        @Suppress(
+            "DEPRECATION"
+        ) // memory-pressure constants/onLowMemory; alternatives are also deprecated
+        val callbacks =
+            object : ComponentCallbacks2 {
+                override fun onTrimMemory(level: Int) {
+                    if (level >= ComponentCallbacks2.TRIM_MEMORY_RUNNING_LOW) mv?.onLowMemory()
+                }
+
+                override fun onLowMemory() {
+                    mv?.onLowMemory()
+                }
+
+                override fun onConfigurationChanged(newConfig: android.content.res.Configuration) =
+                    Unit
             }
-            override fun onLowMemory() { mv?.onLowMemory() }
-            override fun onConfigurationChanged(newConfig: android.content.res.Configuration) = Unit
-        }
         context.applicationContext.registerComponentCallbacks(callbacks)
         onDispose { context.applicationContext.unregisterComponentCallbacks(callbacks) }
     }
 }
 
-private fun configureMap(map: MapLibreMap) {
+private fun configureMap(map: MapLibreMap, initialCenter: GeoPoint? = null) {
     val ui = map.uiSettings
     ui.isCompassEnabled = false
     ui.isLogoEnabled = false
@@ -837,35 +932,50 @@ private fun configureMap(map: MapLibreMap) {
     map.setMaxZoomPreference(MAX_ZOOM)
     map.setMinZoomPreference(MIN_ZOOM)
 
-    map.cameraPosition = CameraPosition.Builder()
-        .target(AdelaideCbd)
-        .zoom(ADELAIDE_ZOOM)
-        .bearing(0.0)
-        .tilt(0.0)
-        .build()
+    map.cameraPosition =
+        CameraPosition.Builder()
+            .target(initialCenter?.let { LatLng(it.latitude, it.longitude) } ?: AdelaideCbd)
+            .zoom(ADELAIDE_ZOOM)
+            .bearing(0.0)
+            .tilt(0.0)
+            .build()
 }
 
-private fun identifyFeature(context: android.content.Context, map: MapLibreMap, latLng: LatLng): IdentifiedFeature? {
+private fun identifyFeature(
+    context: android.content.Context,
+    map: MapLibreMap,
+    latLng: LatLng,
+): IdentifiedFeature? {
     val screenPoint = map.projection.toScreenLocation(latLng)
     return IDENTIFY_LAYERS.firstNotNullOfOrNull { layer ->
         val hits = map.queryRenderedFeatures(screenPoint, layer.id)
         hits.firstNotNullOfOrNull { hit ->
             val props = hit.properties() ?: return@firstNotNullOfOrNull null
-            val name = (props["name:en"] ?: props["name"] ?: props["name:latin"])
-                ?.toString()
-                ?.takeIf { it.isNotBlank() }
-                ?: return@firstNotNullOfOrNull null
+            val name =
+                (props["name:en"] ?: props["name"] ?: props["name:latin"])?.asString?.takeIf {
+                    it.isNotBlank()
+                } ?: return@firstNotNullOfOrNull null
             IdentifiedFeature(
                 name = name,
                 kind = context.getString(layer.kindRes),
                 sourceLayer = layer.sourceLayer,
-                featureClass = props["class"]?.toString(),
+                featureClass = props["class"]?.takeUnless { it.isJsonNull }?.asString,
                 latitude = latLng.latitude,
                 longitude = latLng.longitude,
             )
         }
     }
 }
+
+private fun SearchResult.asIdentifiedFeature(context: Context) =
+    IdentifiedFeature(
+        name = name,
+        kind = context.getString(R.string.feature_poi),
+        sourceLayer = "poi",
+        featureClass = className,
+        latitude = latitude,
+        longitude = longitude,
+    )
 
 private data class IdentifiedFeature(
     val name: String,
@@ -883,9 +993,7 @@ private fun FeatureSheetBody(
     onSave: ((Double, Double) -> Unit)? = null,
 ) {
     Column(
-        modifier = Modifier
-            .fillMaxSize()
-            .padding(horizontal = 24.dp, vertical = 16.dp),
+        modifier = Modifier.fillMaxWidth().padding(horizontal = 24.dp, vertical = 16.dp),
         verticalArrangement = Arrangement.spacedBy(6.dp),
     ) {
         Text(
@@ -900,7 +1008,10 @@ private fun FeatureSheetBody(
         )
         if (!feature.featureClass.isNullOrBlank()) {
             Text(
-                text = "${feature.sourceLayer} · class=${feature.featureClass}",
+                text =
+                    feature.featureClass.substringAfter('=').replace('_', ' ').replaceFirstChar {
+                        it.uppercase()
+                    },
                 style = MaterialTheme.typography.bodySmall,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
             )
@@ -915,7 +1026,7 @@ private fun FeatureSheetBody(
             modifier = Modifier.padding(top = 8.dp),
             horizontalArrangement = Arrangement.spacedBy(8.dp),
         ) {
-            if (onSave != null && feature.latitude != 0.0) {
+            if (onSave != null) {
                 OutlinedButton(onClick = { onSave(feature.latitude, feature.longitude) }) {
                     Icon(
                         Icons.Default.BookmarkBorder,
@@ -925,27 +1036,29 @@ private fun FeatureSheetBody(
                     Text(stringResource(R.string.action_save))
                 }
             }
-            if (onNavigate != null && feature.latitude != 0.0) {
+            if (onNavigate != null) {
                 Button(onClick = { onNavigate(feature.latitude, feature.longitude) }) {
-                    Text(stringResource(R.string.route_start_navigation))
+                    Text(stringResource(R.string.route_directions))
                 }
             }
         }
+        Spacer(Modifier.height(16.dp))
     }
 }
 
 /**
- * Static coverage banner shown when the map is rendering the bundled Adelaide
- * demo tiles (no full SA pack installed). Lightweight translucent chip, matching
- * the attribution overlay's visual language so the top of the map stays calm.
+ * Static coverage banner shown when the map is rendering the bundled Adelaide demo tiles (no full
+ * SA pack installed). Lightweight translucent chip, matching the attribution overlay's visual
+ * language so the top of the map stays calm.
  */
 @Composable
 private fun DemoCoverageBanner(modifier: Modifier = Modifier) {
     Box(
-        modifier = modifier
-            .clip(RoundedCornerShape(6.dp))
-            .background(Color(0xE6263238))
-            .padding(horizontal = 12.dp, vertical = 6.dp),
+        modifier =
+            modifier
+                .clip(RoundedCornerShape(6.dp))
+                .background(Color(0xE6263238))
+                .padding(horizontal = 12.dp, vertical = 6.dp)
     ) {
         Text(
             text = stringResource(R.string.map_demo_pack_banner),
@@ -959,11 +1072,12 @@ private fun DemoCoverageBanner(modifier: Modifier = Modifier) {
 @Composable
 private fun OsmAttributionOverlay(modifier: Modifier = Modifier) {
     Box(
-        modifier = modifier
-            .padding(8.dp)
-            .clip(RoundedCornerShape(4.dp))
-            .background(Color(0xCCFFFFFF))
-            .padding(horizontal = 8.dp, vertical = 4.dp),
+        modifier =
+            modifier
+                .padding(8.dp)
+                .clip(RoundedCornerShape(4.dp))
+                .background(Color(0xCCFFFFFF))
+                .padding(horizontal = 8.dp, vertical = 4.dp)
     ) {
         Text(
             text = stringResource(R.string.map_osm_attribution),
@@ -979,9 +1093,7 @@ private fun NoMapPackPlaceholder(
     modifier: Modifier = Modifier,
 ) {
     Column(
-        modifier = modifier
-            .fillMaxSize()
-            .padding(24.dp),
+        modifier = modifier.fillMaxSize().padding(24.dp),
         verticalArrangement = Arrangement.Center,
         horizontalAlignment = Alignment.CenterHorizontally,
     ) {
@@ -1017,7 +1129,8 @@ private fun MyLocationFab(
         shape = CircleShape,
     ) {
         Icon(
-            imageVector = if (isLocated) Icons.Filled.MyLocation else Icons.Filled.LocationSearching,
+            imageVector =
+                if (isLocated) Icons.Filled.MyLocation else Icons.Filled.LocationSearching,
             contentDescription = stringResource(R.string.map_my_location),
             // The single "you" accent only when a live fix is shown.
             tint = if (isLocated) UserAccentBlue else MaterialTheme.colorScheme.onSurface,
@@ -1028,24 +1141,25 @@ private fun MyLocationFab(
 private val UserAccentBlue = Color(0xFF1E88E5)
 
 /**
- * True only when the app actually declares a location permission in its merged
- * manifest. The `offline` product flavor strips ACCESS_*_LOCATION, so location UI
- * must be hidden there — requesting a permission absent from the manifest is
- * instantly denied and would leave a dead button.
+ * True only when the app actually declares a location permission in its merged manifest. The
+ * `offline` product flavor strips ACCESS_*_LOCATION, so location UI must be hidden there —
+ * requesting a permission absent from the manifest is instantly denied and would leave a dead
+ * button.
  */
 private fun isLocationFeatureDeclared(context: Context): Boolean = runCatching {
     context.packageManager
         .getPackageInfo(context.packageName, PackageManager.GET_PERMISSIONS)
         .requestedPermissions
         ?.contains(Manifest.permission.ACCESS_FINE_LOCATION) == true
-}.getOrDefault(false)
+}
+    .getOrDefault(false)
 
 /**
- * Recenters the camera on the user and the live-location stream for the blue dot
- * are flavor-specific: the real fused-location implementations live in the
- * withNetwork source set, and the offline flavor provides no-op twins (see
- * src/{withNetwork,offline}/.../ui/map/LocationProviders.kt). This keeps Google
- * Play Services and all location code out of the privacy-first offline build.
+ * Recenters the camera on the user and the live-location stream for the blue dot are
+ * flavor-specific: the real fused-location implementations live in the withNetwork source set, and
+ * the offline flavor provides no-op twins (see
+ * src/{withNetwork,offline}/.../ui/map/LocationProviders.kt). This keeps Google Play Services and
+ * all location code out of the privacy-first offline build.
  */
 
 // Default colour for a newly-saved place (one dedicated "saved" green, kept
@@ -1055,20 +1169,21 @@ const val PIN_SAVE_COLOR = "#1B5E20"
 // Pin colour choices — deliberately avoid the traffic-severity crayons
 // (#4CAF50/#FF9800/#F44336/#9C27B0) and the user-location blue so a pin is never
 // mistaken for a traffic marker or the position dot.
-private val PIN_PALETTE = listOf(
-    "#1B5E20", // green
-    "#00838F", // cyan
-    "#6D4C41", // brown
-    "#C2185B", // magenta
-    "#455A64", // slate
-    "#283593", // indigo
-)
+private val PIN_PALETTE =
+    listOf(
+        "#1B5E20", // green
+        "#00838F", // cyan
+        "#6D4C41", // brown
+        "#C2185B", // magenta
+        "#455A64", // slate
+        "#283593", // indigo
+    )
 
 private val MicroLabelFont = androidx.compose.ui.text.font.FontFamily.Monospace
 
 /**
- * Long-press "drop a pin here" sheet. Reverse-geocodes the point to a suggested
- * name (offline), lets the user adjust name + colour, and persists only on Save.
+ * Long-press "drop a pin here" sheet. Reverse-geocodes the point to a suggested name (offline),
+ * lets the user adjust name + colour, and persists only on Save.
  */
 @OptIn(ExperimentalMaterial3Api::class)
 @Suppress("LongParameterList")
@@ -1096,9 +1211,7 @@ private fun DropPinSheet(
 
     ModalBottomSheet(onDismissRequest = onDismiss, sheetState = sheetState) {
         Column(
-            modifier = Modifier
-                .fillMaxWidth()
-                .padding(horizontal = 24.dp, vertical = 16.dp),
+            modifier = Modifier.fillMaxWidth().padding(horizontal = 24.dp, vertical = 16.dp),
             verticalArrangement = Arrangement.spacedBy(12.dp),
         ) {
             Text(
@@ -1132,11 +1245,12 @@ private fun DropPinSheet(
                 }
                 Button(
                     onClick = {
-                        val finalName = name.trim().ifBlank {
-                            place ?: "%.4f, %.4f".format(latitude, longitude)
-                        }
+                        val finalName =
+                            name.trim().ifBlank {
+                                place ?: "%.4f, %.4f".format(latitude, longitude)
+                            }
                         onSave(finalName, selectedColor)
-                    },
+                    }
                 ) {
                     Text(stringResource(R.string.action_save))
                 }
@@ -1158,22 +1272,16 @@ private fun PinDetailSheet(
     val sheetState = rememberModalBottomSheetState()
     ModalBottomSheet(onDismissRequest = onDismiss, sheetState = sheetState) {
         Column(
-            modifier = Modifier
-                .fillMaxWidth()
-                .padding(horizontal = 24.dp, vertical = 16.dp),
+            modifier = Modifier.fillMaxWidth().padding(horizontal = 24.dp, vertical = 16.dp),
             verticalArrangement = Arrangement.spacedBy(8.dp),
         ) {
-            val pinColor = remember(pin.color) {
-                runCatching { Color(android.graphics.Color.parseColor(pin.color)) }
-                    .getOrDefault(Color.Gray)
-            }
+            val pinColor =
+                remember(pin.color) {
+                    runCatching { Color(android.graphics.Color.parseColor(pin.color)) }
+                        .getOrDefault(Color.Gray)
+                }
             Row(verticalAlignment = Alignment.CenterVertically) {
-                Box(
-                    modifier = Modifier
-                        .size(12.dp)
-                        .clip(CircleShape)
-                        .background(pinColor),
-                )
+                Box(modifier = Modifier.size(12.dp).clip(CircleShape).background(pinColor))
                 Text(
                     text = pin.name,
                     style = MaterialTheme.typography.titleLarge,
@@ -1226,18 +1334,22 @@ private fun ColorChoiceRow(
         colors.forEach { colorHex ->
             val isSelected = colorHex == selectedColor
             Box(
-                modifier = Modifier
-                    .size(48.dp)
-                    .clip(CircleShape)
-                    .background(Color(android.graphics.Color.parseColor(colorHex)))
-                    .then(
-                        if (isSelected) {
-                            Modifier.border(2.dp, MaterialTheme.colorScheme.onSurface, CircleShape)
-                        } else {
-                            Modifier
-                        },
-                    )
-                    .clickable(onClickLabel = colorHex) { onColorSelected(colorHex) },
+                modifier =
+                    Modifier.size(48.dp)
+                        .clip(CircleShape)
+                        .background(Color(android.graphics.Color.parseColor(colorHex)))
+                        .then(
+                            if (isSelected) {
+                                Modifier.border(
+                                    2.dp,
+                                    MaterialTheme.colorScheme.onSurface,
+                                    CircleShape,
+                                )
+                            } else {
+                                Modifier
+                            }
+                        )
+                        .clickable(onClickLabel = colorHex) { onColorSelected(colorHex) }
             )
         }
     }
@@ -1277,9 +1389,7 @@ private fun CameraDetailSheet(
     val sheetState = rememberModalBottomSheetState()
     ModalBottomSheet(onDismissRequest = onDismiss, sheetState = sheetState) {
         Column(
-            modifier = Modifier
-                .fillMaxWidth()
-                .padding(horizontal = 24.dp, vertical = 16.dp),
+            modifier = Modifier.fillMaxWidth().padding(horizontal = 24.dp, vertical = 16.dp),
             verticalArrangement = Arrangement.spacedBy(8.dp),
         ) {
             Row(
@@ -1297,19 +1407,22 @@ private fun CameraDetailSheet(
                 )
             }
             Text(
-                text = camera.maxspeedKmh?.let {
-                    stringResource(R.string.map_camera_limit, it)
-                } ?: stringResource(R.string.map_camera_limit_unknown),
+                text =
+                    camera.maxspeedKmh?.let {
+                        stringResource(R.string.map_camera_limit, it)
+                    } ?: stringResource(R.string.map_camera_limit_unknown),
                 style = MaterialTheme.typography.bodyLarge,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
             )
-            camera.wayName?.takeIf { it.isNotBlank() }?.let { way ->
-                Text(
-                    text = way,
-                    style = MaterialTheme.typography.bodyMedium,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                )
-            }
+            camera.wayName
+                ?.takeIf { it.isNotBlank() }
+                ?.let { way ->
+                    Text(
+                        text = way,
+                        style = MaterialTheme.typography.bodyMedium,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                }
             Text(
                 text = "%.5f, %.5f".format(camera.latitude, camera.longitude).uppercase(),
                 style = MaterialTheme.typography.labelSmall,
@@ -1318,9 +1431,7 @@ private fun CameraDetailSheet(
             )
             Button(
                 onClick = onDirections,
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .padding(top = 8.dp),
+                modifier = Modifier.fillMaxWidth().padding(top = 8.dp),
             ) {
                 Text(stringResource(R.string.route_directions))
             }

@@ -7,16 +7,17 @@ import androidx.work.Configuration
 import au.com.ausroads.di.RoutingInitializer
 import au.com.ausroads.di.SearchInitializer
 import au.com.ausroads.offline.download.MapPackManager
+import au.com.ausroads.offline.download.state.InstalledPack
 import dagger.Lazy
 import dagger.hilt.android.HiltAndroidApp
+import javax.inject.Inject
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
-import kotlinx.coroutines.flow.distinctUntilChanged
-import kotlinx.coroutines.flow.drop
-import kotlinx.coroutines.flow.map
+import kotlinx.coroutines.flow.StateFlow
+import kotlinx.coroutines.flow.collect
 import kotlinx.coroutines.launch
-import javax.inject.Inject
 
 @HiltAndroidApp
 class AusRoadsApp : Application(), Configuration.Provider {
@@ -34,47 +35,50 @@ class AusRoadsApp : Application(), Configuration.Provider {
     // Without this, the widget's periodic worker fails to construct at runtime.
     @Inject lateinit var workerFactory: HiltWorkerFactory
 
-    private val appScope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
+    private val appScope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
 
     override val workManagerConfiguration: Configuration
-        get() = Configuration.Builder()
-            .setWorkerFactory(workerFactory)
-            .build()
+        get() = Configuration.Builder().setWorkerFactory(workerFactory).build()
 
     override fun onCreate() {
         super.onCreate()
-        initializePacks("startup")
-
-        // Re-open search + routing whenever a newly installed pack appears, so a
-        // pack downloaded in-session is picked up without a full app restart
-        // (search.db / valhalla_tiles.tar are otherwise only opened at startup).
+        // Registration itself performs boot initialization from the current authority.
+        // Never drop the initial record: it may already be a replacement that arrived
+        // before registration. Subsequent full-record changes (including same-version
+        // retries) initialize serially; StateFlow retains the latest while I/O is running.
         appScope.launch {
-            mapPackManager.get().installed
-                .map { it?.version }
-                .distinctUntilChanged()
-                .drop(1) // startup already initialized whatever was installed then
-                .collect { version ->
-                    Log.i(TAG, "Installed pack changed to v$version — re-initializing search + routing")
-                    initializePacks("pack-install:v$version")
-                }
+            collectInstalledPacks({ mapPackManager.get().installed }) {
+                Log.i(TAG, "component=packs seam=installed-record class=joined")
+                initializePacks()
+            }
         }
     }
 
-    private fun initializePacks(reason: String) {
-        Log.i(TAG, "Initializing search index ($reason)")
+    private fun initializePacks() {
         runCatching { searchInitializer.initialize() }
-            .onFailure { Log.w(TAG, "Search init failed ($reason)", it) }
+            .onFailure { Log.w(TAG, "component=places seam=bootstrap class=not-joined") }
 
-        // Routing tiles can be large to memory-map; initialize off the main thread
-        // so app startup is never blocked by a present routing pack.
-        Thread({
-            Log.i(TAG, "Initializing routing ($reason)")
-            runCatching { routingInitializer.initialize() }
-                .onFailure { Log.w(TAG, "Routing init failed ($reason)", it) }
-        }, "routing-init").start()
+        // Already off Main, and serialized with the next installed-record initialization.
+        runCatching { routingInitializer.initialize() }
+            .onFailure { Log.w(TAG, "component=packs seam=routing-init class=not-joined") }
     }
 
     private companion object {
         private const val TAG = "AusRoadsApp"
     }
+}
+
+/** Single boot/replacement crossing, also exercised with controlled real SQLite adoptions. */
+@Suppress("TooGenericExceptionCaught") // observer registration failure must not suppress catalog boot
+internal suspend fun collectInstalledPacks(installed: () -> StateFlow<InstalledPack?>, initialize: () -> Unit) {
+    val records = try {
+        installed()
+    } catch (cancelled: CancellationException) {
+        throw cancelled
+    } catch (_: Exception) {
+        Log.w("AusRoadsApp", "component=packs seam=installed-record class=not-joined")
+        initialize()
+        return
+    }
+    records.collect { initialize() }
 }

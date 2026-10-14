@@ -20,6 +20,6 @@
     <string name="nav_camera_ahead">Speed camera ahead</string>
     <string name="nav_camera_ahead_limit">Speed camera · limit %1$d km/h</string>
     <string name="nav_acquiring_gps">Waiting for GPS fix…</string>
-    <string name="nav_gps_lost">GPS signal lost — check sky view</string>
+    <string name="nav_gps_lost">GPS unavailable — check location settings or end navigation and try again</string>
     <string name="nav_dismiss">Dismiss</string>
 </resources>

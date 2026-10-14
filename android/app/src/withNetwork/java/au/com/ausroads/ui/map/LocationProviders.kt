@@ -55,7 +55,9 @@ internal fun rememberUserLocation(hasPermission: Boolean): State<Location?> {
     val location = remember { mutableStateOf<Location?>(null) }
 
     DisposableEffect(hasPermission, lifecycleOwner) {
-        Log.i(TAG, "rememberUserLocation: hasPermission=$hasPermission")
+        // Diagnostics never serialize a Location or the SDK's Throwable payload.
+        Log.i(TAG, if (hasPermission) "component=user_location seam=permission class=granted"
+            else "component=user_location seam=permission class=missing")
         if (!hasPermission) {
             location.value = null
             return@DisposableEffect onDispose { }
@@ -67,7 +69,7 @@ internal fun rememberUserLocation(hasPermission: Boolean): State<Location?> {
         val callback = object : LocationCallback() {
             override fun onLocationResult(result: LocationResult) {
                 result.lastLocation?.let {
-                    Log.d(TAG, "location update: ${it.latitude},${it.longitude} (acc ${it.accuracy}m)")
+                    Log.d(TAG, "component=user_location seam=stream_fix class=received")
                     location.value = it
                 }
             }
@@ -83,42 +85,42 @@ internal fun rememberUserLocation(hasPermission: Boolean): State<Location?> {
                     context, Manifest.permission.ACCESS_FINE_LOCATION,
                 ) != PackageManager.PERMISSION_GRANTED
             ) {
-                Log.w(TAG, "location permission missing; skipping location updates")
+                Log.w(TAG, "component=user_location seam=stream_permission class=missing")
                 return
             }
-            Log.i(TAG, "starting fused location updates")
+            Log.i(TAG, "component=user_location seam=stream_request class=started")
             // Seed immediately: lastLocation is fast but often null on a cold device,
             // so also request a single fresh fix so the blue dot appears promptly.
             runCatching {
                 client.lastLocation
                     .addOnSuccessListener { loc ->
                         if (loc != null) {
-                            Log.d(TAG, "lastLocation: ${loc.latitude},${loc.longitude} (acc ${loc.accuracy}m)")
+                            Log.d(TAG, "component=user_location seam=last_fix class=received")
                             location.value = loc
                         } else {
-                            Log.i(TAG, "lastLocation returned null (no cached fix)")
+                            Log.i(TAG, "component=user_location seam=last_fix class=empty")
                         }
                     }
-                    .addOnFailureListener { Log.w(TAG, "lastLocation failed", it) }
-            }.onFailure { Log.w(TAG, "lastLocation call threw", it) }
+                    .addOnFailureListener { Log.w(TAG, "component=user_location seam=last_task class=failed") }
+            }.onFailure { Log.w(TAG, "component=user_location seam=last_call class=failed") }
             runCatching {
                 client.getCurrentLocation(Priority.PRIORITY_HIGH_ACCURACY, null)
                     .addOnSuccessListener { loc ->
                         if (loc != null) {
-                            Log.d(TAG, "getCurrentLocation: ${loc.latitude},${loc.longitude} (acc ${loc.accuracy}m)")
+                            Log.d(TAG, "component=user_location seam=current_fix class=received")
                             location.value = loc
                         } else {
-                            Log.i(TAG, "getCurrentLocation returned null")
+                            Log.i(TAG, "component=user_location seam=current_fix class=empty")
                         }
                     }
-                    .addOnFailureListener { Log.w(TAG, "getCurrentLocation failed", it) }
-            }.onFailure { Log.w(TAG, "getCurrentLocation call threw", it) }
+                    .addOnFailureListener { Log.w(TAG, "component=user_location seam=current_task class=failed") }
+            }.onFailure { Log.w(TAG, "component=user_location seam=current_call class=failed") }
             runCatching {
                 client.requestLocationUpdates(request, callback, Looper.getMainLooper())
-            }.onFailure { Log.w(TAG, "requestLocationUpdates threw", it) }
+            }.onFailure { Log.w(TAG, "component=user_location seam=stream_call class=failed") }
         }
         fun stop() {
-            Log.i(TAG, "stopping fused location updates")
+            Log.i(TAG, "component=user_location seam=stream_remove class=requested")
             client.removeLocationUpdates(callback)
         }
 
@@ -158,38 +160,38 @@ internal fun recenterOnUser(
     unavailableMessage: String,
 ) {
     if (map == null) {
-        Log.w(TAG, "recenter: map not ready")
+        Log.w(TAG, "component=user_location seam=recenter_map class=not_ready")
         return
     }
     val hasPermission = ContextCompat.checkSelfPermission(
         context, Manifest.permission.ACCESS_FINE_LOCATION,
     ) == PackageManager.PERMISSION_GRANTED
     if (!hasPermission) {
-        Log.w(TAG, "recenter: ACCESS_FINE_LOCATION not granted")
+        Log.w(TAG, "component=user_location seam=recenter_permission class=missing")
         return
     }
 
     if (cached != null) {
-        Log.d(TAG, "recenter: using cached fix ${cached.latitude},${cached.longitude}")
+        Log.d(TAG, "component=user_location seam=recenter_cached class=received")
         map.animateToLatLng(cached.latitude, cached.longitude)
         return
     }
     // No fix yet — request a fresh one with feedback.
-    Log.i(TAG, "recenter: no cached fix, requesting fresh getCurrentLocation")
+    Log.i(TAG, "component=user_location seam=recenter_request class=started")
     scope.launch { snackbarHostState.showSnackbar(locatingMessage) }
     val client = LocationServices.getFusedLocationProviderClient(context)
     client.getCurrentLocation(Priority.PRIORITY_HIGH_ACCURACY, null)
         .addOnSuccessListener { location ->
             if (location != null) {
-                Log.d(TAG, "recenter: got fix ${location.latitude},${location.longitude}")
+                Log.d(TAG, "component=user_location seam=recenter_fix class=received")
                 map.animateToLatLng(location.latitude, location.longitude)
             } else {
-                Log.w(TAG, "recenter: getCurrentLocation returned null")
+                Log.w(TAG, "component=user_location seam=recenter_fix class=empty")
                 scope.launch { snackbarHostState.showSnackbar(unavailableMessage) }
             }
         }
         .addOnFailureListener {
-            Log.w(TAG, "recenter: getCurrentLocation failed", it)
+            Log.w(TAG, "component=user_location seam=recenter_task class=failed")
             scope.launch { snackbarHostState.showSnackbar(unavailableMessage) }
         }
 }

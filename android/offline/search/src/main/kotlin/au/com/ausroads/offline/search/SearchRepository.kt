@@ -13,7 +13,10 @@ data class SpeedCameraPoint(
 interface SearchRepository {
     /**
      * Search for features matching the given query.
-     * Uses FTS5 prefix matching: "cedu" matches "Ceduna", "Ceduna 5690", etc.
+     * Every whitespace-separated token must occur within the catalog name. Partial
+     * tokens match substrings; percent, underscore and backslash match literally.
+     * This uses the standard metadata table and does not require Android FTS5.
+     * @throws DiscoveryUnavailableException when the catalog is not open.
      * @param query The search text (partial or full)
      * @param limit Maximum number of results to return
      * @param kind Optional kind filter ("suburb", "poi", "road", etc.)
@@ -44,8 +47,8 @@ interface SearchRepository {
      *
      * @param category The POI category to list.
      * @param limit Maximum number of results to return.
-     * @return Matching POIs sorted by name, or empty when the index is
-     *   closed/empty or nothing matches.
+     * @return Matching POIs sorted by name, or empty when nothing matches.
+     * @throws DiscoveryUnavailableException when the catalog is not open.
      */
     suspend fun browseByCategory(category: PoiCategory, limit: Int = 200): List<SearchResult>
 
@@ -60,7 +63,8 @@ interface SearchRepository {
      * @param limit Maximum number of results to return.
      * @param maxDistanceDegrees Half-width of the search bbox in degrees.
      * @return Up to [limit] matching POIs ordered nearest-first, or empty when
-     *   the index is closed/empty or nothing is within range.
+     *   nothing is within range.
+     * @throws DiscoveryUnavailableException when the catalog is not open.
      */
     suspend fun nearestByCategory(
         latitude: Double,

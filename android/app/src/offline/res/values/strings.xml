@@ -6,5 +6,7 @@
   src/main/res/values/strings.xml.
 -->
 <resources>
-    <string name="about_privacy_full">The AndroidManifest declares no INTERNET and no location permissions, and this build contains no Google Play Services dependency and no foreground service. All maps, search and routing run fully offline from the installed map pack. Nothing leaves your device: cloud backup and device-to-device transfer are disabled, and there is no analytics SDK, no crash reporter, no accounts, and no tracking of any kind. The privacy posture is documented in the project repository under docs/notes/privacy.md and reflected in this in-app privacy section.</string>
+    <string name="about_privacy_full">This edition has no internet or location permissions, Google Play Services dependency or navigation foreground service. Maps, search and available routing use local included or installed data. Interests, explicit visits, pins and route history are stored on this device; app cloud backup and device-to-device transfer are disabled. Sharing a location is an explicit action that opens another app; that app has its own privacy policy. There are no analytics, ads or accounts.</string>
+    <string name="nav_location_unavailable">This offline edition does not use GPS. You can view a route, but turn-by-turn navigation requires the standard edition with location permission.</string>
+    <string name="route_engine_unavailable">Routing data is not available. This offline edition includes an Adelaide demo map but no routing pack or live GPS guidance.</string>
 </resources>

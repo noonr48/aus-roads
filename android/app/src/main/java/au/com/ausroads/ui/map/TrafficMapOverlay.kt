@@ -39,17 +39,13 @@ private const val COLOR_DEFAULT = "#FF9800"
 /**
  * MapLibre expression that maps severity property to a color.
  */
-private fun severityColorExpr(): Expression = Expression.match(
+internal fun severityColorExpr(): Expression = Expression.match(
     Expression.get("severity"),
-    Expression.color(Color.parseColor(COLOR_LOW)),
-    Expression.literal("LOW"),
-    Expression.color(Color.parseColor(COLOR_MEDIUM)),
-    Expression.literal("MEDIUM"),
-    Expression.color(Color.parseColor(COLOR_HIGH)),
-    Expression.literal("HIGH"),
-    Expression.color(Color.parseColor(COLOR_CRITICAL)),
-    Expression.literal("CRITICAL"),
     Expression.color(Color.parseColor(COLOR_DEFAULT)),
+    Expression.stop("LOW", Expression.color(Color.parseColor(COLOR_LOW))),
+    Expression.stop("MEDIUM", Expression.color(Color.parseColor(COLOR_MEDIUM))),
+    Expression.stop("HIGH", Expression.color(Color.parseColor(COLOR_HIGH))),
+    Expression.stop("CRITICAL", Expression.color(Color.parseColor(COLOR_CRITICAL))),
 )
 
 /**

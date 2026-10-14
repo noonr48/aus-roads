@@ -7,6 +7,9 @@ import au.com.ausroads.feature.navigation.RoadHazardContext
 import au.com.ausroads.feature.navigation.RoadHazardSource
 import au.com.ausroads.offline.search.SearchRepository
 import kotlin.math.min
+import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.ensureActive
+import kotlin.coroutines.coroutineContext
 
 /**
  * Pack-backed [RoadHazardSource]: the navigation feature module consumes the
@@ -19,6 +22,7 @@ import kotlin.math.min
  */
 class SearchRoadHazardSource(
     private val searchRepository: SearchRepository,
+    private val health: PlacesHealth,
 ) : RoadHazardSource {
 
     override suspend fun contextAt(
@@ -30,18 +34,22 @@ class SearchRoadHazardSource(
             .coerceAtLeast(MIN_RADIUS_DEGREES)
         val here = GeoPoint(longitude = longitude, latitude = latitude)
 
-        val speedLimit = searchRepository.maxspeedNear(
-            latitude = latitude,
-            longitude = longitude,
-            maxDistanceDegrees = min(SPEED_SNAP_DEGREES, radiusDegrees),
-        )
+        val speedLimit = lookup(PlacesSeam.ROAD_SPEED_QUERY, null) {
+            searchRepository.maxspeedNear(
+                latitude = latitude,
+                longitude = longitude,
+                maxDistanceDegrees = min(SPEED_SNAP_DEGREES, radiusDegrees),
+            )
+        }
 
-        val cameras = searchRepository.camerasNear(
-            latitude = latitude,
-            longitude = longitude,
-            maxDistanceDegrees = radiusDegrees,
-            limit = CAMERA_QUERY_LIMIT,
-        ).map { camera ->
+        val cameras = lookup(PlacesSeam.CAMERAS_QUERY, emptyList()) {
+            searchRepository.camerasNear(
+                latitude = latitude,
+                longitude = longitude,
+                maxDistanceDegrees = radiusDegrees,
+                limit = CAMERA_QUERY_LIMIT,
+            )
+        }.map { camera ->
             RoadHazardCamera(
                 id = "%.6f,%.6f".format(java.util.Locale.US, camera.latitude, camera.longitude),
                 latitude = camera.latitude,
@@ -60,6 +68,20 @@ class SearchRoadHazardSource(
             cameras = cameras,
         )
     }
+
+    @Suppress("TooGenericExceptionCaught") // fixed-seam alarm, safe unknown data, never stale driver context
+    private suspend fun <T> lookup(seam: PlacesSeam, unknown: T, query: suspend () -> T): T =
+        try {
+            val result = query()
+            coroutineContext.ensureActive()
+            health.success(seam)
+            result
+        } catch (cancelled: CancellationException) {
+            throw cancelled
+        } catch (_: Exception) {
+            health.failure(seam)
+            unknown
+        }
 
     private companion object {
         /** Metres per degree of latitude (mean Earth approximation). */

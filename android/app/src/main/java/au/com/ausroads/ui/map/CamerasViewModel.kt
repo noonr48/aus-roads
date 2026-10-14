@@ -2,16 +2,21 @@ package au.com.ausroads.ui.map
 
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
+import au.com.ausroads.di.PlacesHealth
+import au.com.ausroads.di.PlacesSeam
+import au.com.ausroads.offline.search.DiscoveryAvailability
+import au.com.ausroads.offline.search.PlaceDiscoveryRepository
 import au.com.ausroads.offline.search.SearchRepository
 import au.com.ausroads.offline.search.SpeedCameraPoint
 import dagger.hilt.android.lifecycle.HiltViewModel
 import javax.inject.Inject
 import kotlinx.coroutines.CancellationException
-import kotlinx.coroutines.Job
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.ensureActive
 import kotlinx.coroutines.flow.MutableStateFlow
-import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.flow.collectLatest
+import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
 
@@ -19,75 +24,118 @@ import kotlinx.coroutines.launch
 data class CamerasUiState(
     val cameras: List<SpeedCameraPoint> = emptyList(),
     val selected: SpeedCameraPoint? = null,
+    val queryFailed: Boolean = false,
 )
 
-/**
- * Viewport-driven speed-camera layer: whenever the map comes to rest, query the
- * pack's `road_cameras` table for the visible area (debounced, so pan/zoom
- * gestures do not spam the database).
- *
- * The first query also runs at map-ready with the default camera so Adelaide
- * shows its cameras before the user pans at all.
- */
+/** The last viewport refreshes when the catalog becomes ready or is replaced, without a pan. */
 @HiltViewModel
-class CamerasViewModel @Inject constructor(
+class CamerasViewModel
+@Inject
+constructor(
     private val searchRepository: SearchRepository,
+    private val health: PlacesHealth,
 ) : ViewModel() {
-
     private val _state = MutableStateFlow(CamerasUiState())
-    val state: StateFlow<CamerasUiState> = _state.asStateFlow()
+    val state = _state.asStateFlow()
+    private val viewport = MutableStateFlow<Viewport?>(null)
+    private val refresh = MutableStateFlow(0L)
+    private val discovery = searchRepository as? PlaceDiscoveryRepository
+    private val availability =
+        discovery?.availability ?: MutableStateFlow(DiscoveryAvailability.READY)
+    private val generation = discovery?.generation ?: MutableStateFlow(0L)
 
-    private var queryJob: Job? = null
-
-    /** Map came to rest (or is ready): refresh cameras around the viewport. */
-    fun onViewportChanged(centerLatitude: Double, centerLongitude: Double, halfSpanMeters: Double) {
-        queryJob?.cancel()
-        queryJob = viewModelScope.launch {
-            delay(VIEWPORT_DEBOUNCE_MS)
-            val radiusDegrees = (halfSpanMeters / METERS_PER_DEGREE_LATITUDE)
-                .coerceIn(MIN_RADIUS_DEGREES, MAX_RADIUS_DEGREES)
-            val cameras = try {
-                searchRepository.camerasNear(
-                    latitude = centerLatitude,
-                    longitude = centerLongitude,
-                    maxDistanceDegrees = radiusDegrees,
-                    limit = CAMERA_LIMIT,
-                )
-            } catch (e: CancellationException) {
-                // A cancelled query (rapid pan → debounce superseded) must not
-                // publish an empty layer over a live one.
-                throw e
-            } catch (_: Exception) {
-                emptyList()
-            }
-            _state.update { it.copy(cameras = cameras) }
+    init {
+        viewModelScope.launch {
+            combine(viewport, availability, generation, refresh) { area, ready, epoch, serial ->
+                    Request(area, ready, epoch, serial)
+                }
+                .collectLatest { request ->
+                    val area = request.area
+                    _state.update { it.copy(queryFailed = false) }
+                    if (area == null || request.availability != DiscoveryAvailability.READY) {
+                        _state.update { it.copy(cameras = emptyList(), selected = null) }
+                        return@collectLatest
+                    }
+                    delay(VIEWPORT_DEBOUNCE_MS)
+                    val cameras =
+                        try {
+                            searchRepository.camerasNear(
+                                latitude = area.latitude,
+                                longitude = area.longitude,
+                                maxDistanceDegrees =
+                                    (area.halfSpanMeters / METERS_PER_DEGREE_LATITUDE).coerceIn(
+                                        MIN_RADIUS_DEGREES,
+                                        MAX_RADIUS_DEGREES,
+                                    ),
+                                limit = CAMERA_LIMIT,
+                            )
+                        } catch (cancelled: CancellationException) {
+                            throw cancelled
+                        } catch (_: Exception) {
+                            if (isCurrent(request)) {
+                                health.failure(PlacesSeam.CAMERAS_QUERY)
+                                _state.update { it.copy(cameras = emptyList(), selected = null, queryFailed = true) }
+                            }
+                            return@collectLatest
+                        }
+                    coroutineContext.ensureActive()
+                    if (isCurrent(request)) {
+                        health.success(PlacesSeam.CAMERAS_QUERY)
+                        _state.update { current ->
+                            current.copy(
+                                cameras = cameras,
+                                selected = current.selected?.takeIf { it in cameras },
+                                queryFailed = false,
+                            )
+                        }
+                    }
+                }
         }
     }
 
-    /** A camera marker was tapped; null clears the detail sheet. */
+    /** Map came to rest (or is ready); bursts supersede work rather than publish stale layers. */
+    fun onViewportChanged(centerLatitude: Double, centerLongitude: Double, halfSpanMeters: Double) {
+        val next = Viewport(centerLatitude, centerLongitude, halfSpanMeters)
+        if (viewport.value == next && _state.value.queryFailed) {
+            // Consume one Retry immediately; duplicate idle callbacks cannot keep
+            // canceling the same recovery while it is debounced/in flight.
+            _state.update { it.copy(queryFailed = false) }
+            refresh.value += 1L
+        } else viewport.value = next
+    }
+
+    fun retry() {
+        viewport.value?.let { onViewportChanged(it.latitude, it.longitude, it.halfSpanMeters) }
+    }
+
     fun select(camera: SpeedCameraPoint?) {
         _state.update { it.copy(selected = camera) }
     }
 
-    override fun onCleared() {
-        queryJob?.cancel()
-        super.onCleared()
-    }
+    private fun isCurrent(request: Request) =
+        viewport.value == request.area &&
+            generation.value == request.generation &&
+            refresh.value == request.serial &&
+            availability.value == DiscoveryAvailability.READY
+
+    private data class Viewport(
+        val latitude: Double,
+        val longitude: Double,
+        val halfSpanMeters: Double,
+    )
+
+    private data class Request(
+        val area: Viewport?,
+        val availability: DiscoveryAvailability,
+        val generation: Long,
+        val serial: Long,
+    )
 
     private companion object {
-        /** Debounce for pan/zoom bursts; keeps queries to rest-state only. */
         const val VIEWPORT_DEBOUNCE_MS = 250L
-
-        /** Metres per degree of latitude (mean Earth approximation). */
         const val METERS_PER_DEGREE_LATITUDE = 111_320.0
-
-        /** Floor ~1 km of arc (city block scale). */
         const val MIN_RADIUS_DEGREES = 0.01
-
-        /** Ceiling ~40 km of arc (state-wide zoom still bounded). */
         const val MAX_RADIUS_DEGREES = 0.36
-
-        /** Rendered marker cap; nearest-first keeps the relevant ones. */
         const val CAMERA_LIMIT = 150
     }
 }

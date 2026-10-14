@@ -1,6 +1,8 @@
 package au.com.ausroads.ui.map
 
 import androidx.lifecycle.ViewModel
+import au.com.ausroads.di.PlacesHealth
+import au.com.ausroads.di.PlacesSeam
 import au.com.ausroads.offline.download.MapPackManager
 import au.com.ausroads.offline.download.state.InstalledPack
 import dagger.hilt.android.lifecycle.HiltViewModel
@@ -20,8 +22,17 @@ import javax.inject.Inject
 @HiltViewModel
 class MapPackStateViewModel @Inject constructor(
     mapPackManager: MapPackManager,
+    private val health: PlacesHealth,
 ) : ViewModel() {
 
     /** The currently installed downloaded pack, or null while none is installed. */
     val installed: StateFlow<InstalledPack?> = mapPackManager.installed
+
+    fun recordAssets(success: Boolean) = record(PlacesSeam.MAP_ASSETS, success)
+
+    fun recordStyle(success: Boolean) = record(PlacesSeam.MAP_STYLE, success)
+
+    private fun record(seam: PlacesSeam, success: Boolean) {
+        if (success) health.success(seam) else health.failure(seam)
+    }
 }

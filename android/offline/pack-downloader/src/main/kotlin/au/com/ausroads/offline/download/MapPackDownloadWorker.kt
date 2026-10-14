@@ -17,22 +17,12 @@ import au.com.ausroads.offline.download.download.PackExtractor
 import au.com.ausroads.offline.download.download.PackInstaller
 import au.com.ausroads.offline.download.state.DownloadProgress
 import au.com.ausroads.offline.download.state.PackStateStore
-import au.com.ausroads.offline.pack.PackManifest
 import dagger.assisted.Assisted
 import dagger.assisted.AssistedInject
 import kotlinx.coroutines.CancellationException
-import kotlinx.serialization.json.Json
 import java.io.File
-
-/**
- * Lenient JSON matching ManifestFetcher's, so a manifest accepted at fetch time
- * (e.g. with unknown keys) also decodes here — otherwise it would decode to null
- * and verification would be silently skipped.
- */
-private val MANIFEST_JSON = Json {
-    ignoreUnknownKeys = true
-    isLenient = true
-}
+import java.nio.file.Files
+import java.util.Comparator
 
 @HiltWorker
 class MapPackDownloadWorker @AssistedInject constructor(
@@ -75,13 +65,10 @@ class MapPackDownloadWorker @AssistedInject constructor(
             setForeground(createForegroundInfo())
 
             // 1. Download
-            val partialDir = packStateStore.partialDir()
-            partialDir.mkdirs()
-            val zipFile = File(partialDir, "pack.zip")
-
-            packDownloader.download(
+            val zipFile = downloadPackToScratch(
                 url = packUrl,
-                target = zipFile,
+                packDownloader = packDownloader,
+                packStateStore = packStateStore,
                 onProgress = { bytes, total ->
                     setProgressAsync(Data.Builder()
                         .putLong("bytes", bytes)
@@ -91,61 +78,27 @@ class MapPackDownloadWorker @AssistedInject constructor(
                 }
             )
 
-            // 2. Extract
-            val installDir = packStateStore.packDir(packVersion)
-            setProgressAsync(Data.Builder()
-                .putString("phase", DownloadProgress.Phase.EXTRACTING.name)
-                .build())
-            packExtractor.extract(zipFile, installDir)
-
-            // 3 + 4. Verify (if manifest available) then install. Delegated to
-            // PackInstaller so the verify-fail cleanup + current.json write are
-            // unit-testable without WorkManager/foreground machinery.
-            setProgressAsync(Data.Builder()
-                .putString("phase", DownloadProgress.Phase.VERIFYING.name)
-                .build())
-            val manifest = manifestJson?.let {
-                try { MANIFEST_JSON.decodeFromString(PackManifest.serializer(), it) } catch (_: Exception) { null }
-            }
-            setProgressAsync(Data.Builder()
-                .putString("phase", DownloadProgress.Phase.INSTALLING.name)
-                .build())
-            val outcome = packInstaller.finalize(
-                installDir = installDir,
+            // 2–5. The real extraction/installer boundary owns the shared state
+            // transaction, including rejection and late-failure cleanup.
+            val outcome = installDownloadedPack(
+                zipFile = zipFile,
                 packVersion = packVersion,
-                manifest = manifest,
                 manifestJson = manifestJson,
-                zipLength = zipFile.length(),
+                packExtractor = packExtractor,
+                packStateStore = packStateStore,
+                packInstaller = packInstaller,
+                onPhase = { phase ->
+                    setProgressAsync(Data.Builder().putString("phase", phase.name).build())
+                },
             )
-            if (outcome is PackInstaller.Outcome.VerificationFailed) {
-                // A rejected pack must not survive as scratch state: the next attempt
-                // would Range-resume onto the poisoned .partial/pack.zip bytes and fail
-                // verification forever.
-                deletePartialScratch(partialDir)
-                return Result.failure(
-                    Data.Builder().putString(KEY_RESULT_ERROR, outcome.message).build()
-                )
+            when (outcome) {
+                PackInstaller.Outcome.Installed -> Result.success()
+                is PackInstaller.Outcome.VerificationFailed -> Result.failure(workerFailureData(outcome.message))
             }
-
-            // 5. Cleanup
-            zipFile.delete()
-            partialDir.deleteRecursively()
-
-            Result.success()
         } catch (t: Throwable) {
-            // May rethrow: cancellation is control flow, never a download failure.
-            val errorMessage = workerErrorMessageOrRethrow(t)
-            // A download/extract failure may have created a half-written v<version>
-            // dir; remove it and the base dir if no installed pack remains so a
-            // failed attempt leaves no confusing empty directory behind. The scratch
-            // zip goes too: cleanupIfEmpty only reaches it when nothing remains
-            // installed, so poison must be dropped explicitly on every failure path.
-            runCatching {
-                packStateStore.packDir(packVersion).deleteRecursively()
-                deletePartialScratch(packStateStore.partialDir())
-                packStateStore.cleanupIfEmpty()
-            }
-            Result.failure(Data.Builder().putString(KEY_RESULT_ERROR, errorMessage).build())
+            Result.failure(workerFailureData(
+                cleanupDownloadFailure(t, packVersion, packStateStore, packInstaller),
+            ))
         }
     }
 
@@ -180,6 +133,64 @@ class MapPackDownloadWorker @AssistedInject constructor(
     }
 }
 
+/** Real worker download boundary: Store validation must precede the downloader's first write. */
+internal suspend fun downloadPackToScratch(
+    url: String,
+    packDownloader: PackDownloader,
+    packStateStore: PackStateStore,
+    onProgress: (Long, Long?) -> Unit = { _, _ -> },
+): File = packDownloader.download(url, File(packStateStore.partialDir(), "pack.zip"), onProgress)
+
+/** Smallest real worker tail: real ZIP/extractor/installer, without foreground machinery. */
+internal suspend fun installDownloadedPack(
+    zipFile: File,
+    packVersion: String,
+    manifestJson: String?,
+    packExtractor: PackExtractor,
+    packStateStore: PackStateStore,
+    packInstaller: PackInstaller,
+    onPhase: suspend (DownloadProgress.Phase) -> Unit = {},
+): PackInstaller.Outcome {
+    return try {
+        packStateStore.partialDir() // Refuse unsafe scratch before extraction/adoption, not only cleanup.
+        val outcome = packInstaller.extractAndFinalize(zipFile, packVersion, manifestJson, packExtractor) { phase ->
+            onPhase(phase)
+            packStateStore.partialDir() // Recheck after a suspension before the next installer IO phase.
+        }
+        deletePartialScratch(packStateStore.partialDir())
+        if (outcome is PackInstaller.Outcome.VerificationFailed) {
+            packInstaller.cleanupFailedAttempt(packVersion)
+        }
+        outcome
+    } catch (t: Throwable) {
+        PackInstaller.Outcome.VerificationFailed(
+            cleanupDownloadFailure(t, packVersion, packStateStore, packInstaller),
+        )
+    }
+}
+
+/** The actual doWork and tail catch share this order; unsafe scratch never escalates cleanup. */
+internal suspend fun cleanupDownloadFailure(
+    failure: Throwable,
+    packVersion: String,
+    packStateStore: PackStateStore,
+    packInstaller: PackInstaller,
+): String {
+    // Cancellation escapes before validation/deletion so Range-resume bytes survive.
+    val message = workerErrorMessageOrRethrow(failure)
+    if (message == PackStateStore.SCRATCH_INVALID) return message
+    val cleanupFailure = runCatching {
+        deletePartialScratch(packStateStore.partialDir())
+        packInstaller.cleanupFailedAttempt(packVersion)
+    }.exceptionOrNull()
+    return if (cleanupFailure?.message == PackStateStore.SCRATCH_INVALID) PackStateStore.SCRATCH_INVALID else message
+}
+
+/** The same fixed/error payload is stored in WorkManager output and observed by the manager. */
+internal fun workerFailureData(message: String): Data = Data.Builder()
+    .putString(MapPackDownloadWorker.KEY_RESULT_ERROR, message)
+    .build()
+
 /** Fallback KEY_RESULT_ERROR payload for throwables carrying no usable message. */
 internal const val DOWNLOAD_ERROR_FALLBACK = "download failed"
 
@@ -201,14 +212,18 @@ internal fun workerErrorMessageOrRethrow(t: Throwable): String {
 /**
  * Deletes the .partial scratch tree holding a half-downloaded pack.zip.
  *
- * Called on the verification-failure exit and on every generic-failure exit
- * (the catch-all); the SUCCESS exit performs the equivalent removal inline
- * right after moving the zip into place. Cancellation deliberately skips it:
+ * Called on safe verification/generic-failure exits and success through
+ * [installDownloadedPack]. An unsafe identity is refusal, never cleanup permission.
+ * Cancellation deliberately skips it:
  * the partial bytes survive so the next attempt can Range-resume from them,
  * which is self-healing — an unsound resume fails SHA verification, and the
  * verification-failure path above deletes the poisoned scratch instead of
  * Range-resuming onto it forever.
  */
 internal fun deletePartialScratch(scratchDir: File) {
-    scratchDir.deleteRecursively()
+    // Production callers obtain the contained identity from Store immediately
+    // before this preflight. Reject the entire linked/unknown tree before deleting
+    // anything, and never use link-following File.deleteRecursively().
+    val entries = requireNotNull(PackStateStore.unlinkedTree(scratchDir)) { PackStateStore.SCRATCH_INVALID }
+    entries.sortedWith(Comparator.reverseOrder()).forEach { Files.delete(it) }
 }

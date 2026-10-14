@@ -1,14 +1,18 @@
 package au.com.ausroads.ui.map
 
+import android.graphics.Bitmap
+import android.graphics.Canvas
 import android.graphics.Color
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.remember
+import androidx.compose.ui.platform.LocalContext
+import androidx.core.content.ContextCompat
+import au.com.ausroads.R
 import au.com.ausroads.offline.search.SpeedCameraPoint
 import org.maplibre.android.maps.MapLibreMap
 import org.maplibre.android.style.expressions.Expression
-import org.maplibre.android.style.layers.CircleLayer
 import org.maplibre.android.style.layers.PropertyFactory
 import org.maplibre.android.style.layers.SymbolLayer
 import org.maplibre.android.style.sources.GeoJsonSource
@@ -28,12 +32,12 @@ private const val CAMERAS_LABEL_MIN_ZOOM = 12f
 // TrafficMapOverlay for the missing-glyph render-frame trap).
 private val CAMERA_LABEL_FONT = arrayOf("Open Sans Regular")
 
-/** Dark navy marker body — distinct from traffic severity hues and pin colours. */
-private const val COLOR_CAMERA_BODY = "#263238"
+private const val CAMERA_MARKER_PX = 32
+private const val CAMERA_ICON_SCALE = 1.1f
 
 /**
- * Renders fixed speed cameras on the MapLibre map: a dark disc with a white
- * ring and a red core, plus an optional enforced-limit label above the marker.
+ * Renders fixed speed cameras with a compact camera pictogram, plus an optional enforced-limit
+ * label above the marker. Preserve city-scale camera taps.
  *
  * Layers start at zoom 11 (city scale) so the state-wide view stays calm.
  */
@@ -44,9 +48,21 @@ fun CamerasMapOverlay(
 ) {
     if (mapLibreMap == null) return
 
-    val features = remember(cameras) {
-        cameras.map { it.toGeoJsonFeature() }
-    }
+    val context = LocalContext.current
+    val marker =
+        remember(context) {
+            Bitmap.createBitmap(CAMERA_MARKER_PX, CAMERA_MARKER_PX, Bitmap.Config.ARGB_8888).also {
+                bitmap ->
+                val drawable =
+                    requireNotNull(ContextCompat.getDrawable(context, R.drawable.map_camera_marker))
+                drawable.setBounds(0, 0, bitmap.width, bitmap.height)
+                drawable.draw(Canvas(bitmap))
+            }
+        }
+    val features =
+        remember(cameras) {
+            cameras.map { it.toGeoJsonFeature() }
+        }
 
     LaunchedEffect(features, mapLibreMap) {
         val style = mapLibreMap.style ?: return@LaunchedEffect
@@ -55,19 +71,17 @@ fun CamerasMapOverlay(
         if (source != null) {
             source.setGeoJson(FeatureCollection.fromFeatures(features))
         } else {
-            style.addSource(
-                GeoJsonSource(SOURCE_ID, FeatureCollection.fromFeatures(features))
-            )
+            style.addSource(GeoJsonSource(SOURCE_ID, FeatureCollection.fromFeatures(features)))
 
-            // Marker body: dark disc with white stroke.
+            // Preserve the tap layer/id/zoom, but distinguish cameras from saved-place dots.
+            style.addImage("camera-marker", marker)
             style.addLayer(
-                CircleLayer(POINTS_LAYER, SOURCE_ID)
+                SymbolLayer(POINTS_LAYER, SOURCE_ID)
                     .withProperties(
-                        PropertyFactory.circleRadius(6f),
-                        PropertyFactory.circleColor(Color.parseColor(COLOR_CAMERA_BODY)),
-                        PropertyFactory.circleOpacity(0.9f),
-                        PropertyFactory.circleStrokeWidth(2f),
-                        PropertyFactory.circleStrokeColor(Color.WHITE),
+                        PropertyFactory.iconImage("camera-marker"),
+                        PropertyFactory.iconSize(CAMERA_ICON_SCALE),
+                        PropertyFactory.iconAllowOverlap(true),
+                        PropertyFactory.iconIgnorePlacement(true),
                     )
                     .also { it.minZoom = CAMERAS_MIN_ZOOM }
             )
@@ -102,12 +116,10 @@ fun CamerasMapOverlay(
 }
 
 private fun SpeedCameraPoint.toGeoJsonFeature(): Feature {
-    val feature = Feature.fromGeometry(
-        Point.fromLngLat(longitude, latitude)
-    )
+    val feature = Feature.fromGeometry(Point.fromLngLat(longitude, latitude))
     feature.addStringProperty(
         "id",
-        "%.6f,%.6f".format(java.util.Locale.US, latitude, longitude),
+        mapFeatureId(),
     )
     feature.addStringProperty(
         "limit",

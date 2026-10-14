@@ -34,10 +34,8 @@ object TracksDataModule {
         TrackDatabase::class.java,
         TrackDatabase.DATABASE_NAME,
     )
-        // v1 schema: no migrations yet. Destructive fallback is the last-resort net for an
-        // unknown on-disk schema, matching RoutesModule. Replace with addMigrations(...) when
-        // the first tracks schema bump lands.
-        .fallbackToDestructiveMigration(dropAllTables = true)
+        // Tracks and their points are user data. An unsupported schema must fail to open,
+        // never silently erase recordings; add an explicit migration for any future bump.
         .build()
 
     @Provides

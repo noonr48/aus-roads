@@ -47,10 +47,9 @@ object AppModule {
         PinDatabase::class.java,
         PinDatabase.DATABASE_NAME,
     )
-        // Real migrations preserve user pins across schema bumps; destructive
-        // fallback stays only as a last-resort net for an unknown on-disk schema.
+        // Pins are private user data. Unsupported versions must fail at open,
+        // leaving the database intact and the Room migration error observable.
         .addMigrations(PinDatabase.MIGRATION_1_2)
-        .fallbackToDestructiveMigration(dropAllTables = true)
         .build()
 
     @Provides

@@ -1,10 +1,10 @@
 /*
  * Room database for pins. Schema version 2.
  *
- * Pins are user data: a schema bump must NOT silently delete them. [MIGRATIONS]
- * carries the real migration path; destructive fallback is wired in AppModule only
- * as a last-resort net so a corrupted/unknown on-disk schema can never hard-crash
- * the app on launch.
+ * Pins are user data: a schema bump must NOT silently delete them. [MIGRATION_1_2]
+ * carries the supported migration path. AppModule deliberately has no destructive
+ * fallback: unsupported versions and migration/schema failures propagate at open,
+ * preserving the existing database instead of pretending it is empty.
  */
 package au.com.ausroads.data.pins
 
@@ -21,7 +21,7 @@ import androidx.sqlite.db.SupportSQLiteDatabase
     // NOTE: schema export is intentionally off. Enabling it via a plain
     // `ksp { arg("room.schemaLocation", …) }` races the debug/release KSP tasks on
     // the shared schemas/ file (intermittent "EOF" in kspReleaseKotlin). Re-enable
-    // via the variant-aware androidx.room Gradle plugin when adding migration tests.
+    // via the variant-aware androidx.room Gradle plugin if exported schemas are needed.
     // The @ColumnInfo defaults on Pin already keep fresh-install and migrated
     // schemas identical, which is the actual correctness guarantee here.
     exportSchema = false,

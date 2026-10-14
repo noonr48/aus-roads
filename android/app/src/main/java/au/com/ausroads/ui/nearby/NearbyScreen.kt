@@ -1,19 +1,18 @@
 /*
  * NearbyScreen — the "Nearby" tab.
  *
- * Self-contained Material 3 screen (no external navigation callbacks): it shows
- * the reference coordinate in several notations, a always-visible emergency
- * summary (nearest hospital + police), a horizontally scrollable row of
- * category filter chips, and a distance-sorted result list for the selected
- * category. Sharing / "view on map" is done with a geo: intent fired through
- * the LocalContext, so the screen needs nothing wired in from above.
+ * Essentials around the shared map reference: emergency services, category
+ * results and coordinate notations. The production On map callback stays
+ * internal; only an explicit Share action dispatches a geo: chooser.
  */
 @file:Suppress("LongMethod", "TooManyFunctions", "CyclomaticComplexMethod")
 
 package au.com.ausroads.ui.nearby
 
 import android.Manifest
+import android.content.ActivityNotFoundException
 import android.content.Intent
+import android.widget.Toast
 import android.content.pm.PackageManager
 import android.net.Uri
 import androidx.compose.foundation.horizontalScroll
@@ -40,8 +39,8 @@ import androidx.compose.material.icons.filled.LocalPolice
 import androidx.compose.material.icons.filled.Place
 import androidx.compose.material.icons.filled.Share
 import androidx.compose.material.icons.filled.ShoppingCart
-import androidx.compose.material.icons.filled.Wc
 import androidx.compose.material.icons.filled.WaterDrop
+import androidx.compose.material.icons.filled.Wc
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
 import androidx.compose.material3.CircularProgressIndicator
@@ -73,47 +72,52 @@ import au.com.ausroads.R
 import au.com.ausroads.core.geo.CoordinateFormatter
 import au.com.ausroads.core.model.GeoPoint
 import au.com.ausroads.offline.search.PoiCategory
+import au.com.ausroads.offline.search.SearchResult
 import au.com.ausroads.ui.map.rememberUserLocation
 import java.util.Locale
 
 /** Friendly label string-resource for each [PoiCategory]. */
-private fun PoiCategory.labelRes(): Int = when (this) {
-    PoiCategory.FUEL -> R.string.nearby_cat_fuel
-    PoiCategory.EV_CHARGING -> R.string.nearby_cat_ev
-    PoiCategory.HOSPITAL -> R.string.nearby_cat_hospital
-    PoiCategory.PHARMACY -> R.string.nearby_cat_pharmacy
-    PoiCategory.POLICE -> R.string.nearby_cat_police
-    PoiCategory.FIRE_STATION -> R.string.nearby_cat_fire
-    PoiCategory.TOILETS -> R.string.nearby_cat_toilets
-    PoiCategory.DRINKING_WATER -> R.string.nearby_cat_water
-    PoiCategory.CAMPING -> R.string.nearby_cat_camping
-    PoiCategory.SUPERMARKET -> R.string.nearby_cat_supermarket
-}
+private fun PoiCategory.labelRes(): Int =
+    when (this) {
+        PoiCategory.FUEL -> R.string.nearby_cat_fuel
+        PoiCategory.EV_CHARGING -> R.string.nearby_cat_ev
+        PoiCategory.HOSPITAL -> R.string.nearby_cat_hospital
+        PoiCategory.PHARMACY -> R.string.nearby_cat_pharmacy
+        PoiCategory.POLICE -> R.string.nearby_cat_police
+        PoiCategory.FIRE_STATION -> R.string.nearby_cat_fire
+        PoiCategory.TOILETS -> R.string.nearby_cat_toilets
+        PoiCategory.DRINKING_WATER -> R.string.nearby_cat_water
+        PoiCategory.CAMPING -> R.string.nearby_cat_camping
+        PoiCategory.SUPERMARKET -> R.string.nearby_cat_supermarket
+    }
 
 /**
- * Icon for each [PoiCategory]. Every vector here is verified to exist:
- * ShoppingCart/Place/Share are in material-icons-core; the rest are in
- * material-icons-extended, which the :app compose convention puts on the
- * classpath.
+ * Icon for each [PoiCategory]. Every vector here is verified to exist: ShoppingCart/Place/Share are
+ * in material-icons-core; the rest are in material-icons-extended, which the :app compose
+ * convention puts on the classpath.
  */
-private fun PoiCategory.icon(): ImageVector = when (this) {
-    PoiCategory.FUEL -> Icons.Filled.LocalGasStation
-    PoiCategory.EV_CHARGING -> Icons.Filled.EvStation
-    PoiCategory.HOSPITAL -> Icons.Filled.LocalHospital
-    PoiCategory.PHARMACY -> Icons.Filled.LocalPharmacy
-    PoiCategory.POLICE -> Icons.Filled.LocalPolice
-    PoiCategory.FIRE_STATION -> Icons.Filled.LocalFireDepartment
-    PoiCategory.TOILETS -> Icons.Filled.Wc
-    PoiCategory.DRINKING_WATER -> Icons.Filled.WaterDrop
-    PoiCategory.CAMPING -> Icons.Filled.Cabin
-    PoiCategory.SUPERMARKET -> Icons.Filled.ShoppingCart
-}
+private fun PoiCategory.icon(): ImageVector =
+    when (this) {
+        PoiCategory.FUEL -> Icons.Filled.LocalGasStation
+        PoiCategory.EV_CHARGING -> Icons.Filled.EvStation
+        PoiCategory.HOSPITAL -> Icons.Filled.LocalHospital
+        PoiCategory.PHARMACY -> Icons.Filled.LocalPharmacy
+        PoiCategory.POLICE -> Icons.Filled.LocalPolice
+        PoiCategory.FIRE_STATION -> Icons.Filled.LocalFireDepartment
+        PoiCategory.TOILETS -> Icons.Filled.Wc
+        PoiCategory.DRINKING_WATER -> Icons.Filled.WaterDrop
+        PoiCategory.CAMPING -> Icons.Filled.Cabin
+        PoiCategory.SUPERMARKET -> Icons.Filled.ShoppingCart
+    }
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun NearbyScreen(
     modifier: Modifier = Modifier,
     viewModel: NearbyViewModel = hiltViewModel(),
+    mapReference: GeoPoint? = null,
+    onShowOnMap: ((SearchResult) -> Unit)? = null,
+    showTitle: Boolean = true,
 ) {
     val state by viewModel.uiState.collectAsState()
     val context = LocalContext.current
@@ -124,12 +128,21 @@ fun NearbyScreen(
     // (its manifest strips it by design), so Nearby keeps the Adelaide CBD
     // fallback there — no crash, no fake precision, just the honest hint below.
     // Observe-only on purpose: Nearby never prompts for the permission itself.
-    val hasLocationPermission = remember(context) {
-        ContextCompat.checkSelfPermission(
-            context,
-            Manifest.permission.ACCESS_FINE_LOCATION,
-        ) == PackageManager.PERMISSION_GRANTED
+    LaunchedEffect(mapReference) {
+        mapReference?.let { viewModel.setReference(it.latitude, it.longitude) }
     }
+    val hasLocationPermission =
+        remember(context, mapReference) {
+            mapReference == null &&
+                (ContextCompat.checkSelfPermission(
+                    context,
+                    Manifest.permission.ACCESS_FINE_LOCATION,
+                ) == PackageManager.PERMISSION_GRANTED ||
+                    ContextCompat.checkSelfPermission(
+                        context,
+                        Manifest.permission.ACCESS_COARSE_LOCATION,
+                    ) == PackageManager.PERMISSION_GRANTED)
+        }
     val userLocation = rememberUserLocation(hasLocationPermission)
     LaunchedEffect(userLocation.value?.latitude, userLocation.value?.longitude) {
         val fix = userLocation.value ?: return@LaunchedEffect
@@ -137,45 +150,46 @@ fun NearbyScreen(
     }
 
     val shareAt: (Double, Double, String?) -> Unit = { lat, lon, label ->
-        shareLocation(context, lat, lon, label)
+        viewModel.recordShareOutcome(shareLocation(context, lat, lon, label))
+    }
+    val showOnMap: (SearchResult) -> Unit = { place ->
+        if (onShowOnMap != null) onShowOnMap(place)
+        else shareAt(place.latitude, place.longitude, place.name)
     }
 
     Scaffold(
         modifier = modifier,
         topBar = {
-            TopAppBar(title = { Text(stringResource(R.string.nearby_title)) })
+            if (showTitle) TopAppBar(title = { Text(stringResource(R.string.nearby_title)) })
         },
     ) { padding ->
         Column(
-            modifier = Modifier
-                .fillMaxSize()
-                .padding(padding)
-                .verticalScroll(rememberScrollState())
-                .padding(16.dp),
+            modifier =
+                Modifier.fillMaxSize()
+                    .padding(padding)
+                    .verticalScroll(rememberScrollState())
+                    .padding(16.dp),
             verticalArrangement = Arrangement.spacedBy(16.dp),
         ) {
-            CoordinatesCard(
-                reference = state.reference,
-                onShare = {
-                    shareAt(state.reference.latitude, state.reference.longitude, null)
-                },
-            )
-
-            if (!state.usingDeviceLocation) {
-                Text(
-                    text = stringResource(R.string.nearby_distance_hint_adelaide),
-                    style = MaterialTheme.typography.bodySmall,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                    modifier = Modifier.fillMaxWidth(),
-                )
-            }
-
             EmergencySection(
                 emergency = state.emergency,
                 lookupFailed = state.emergencyLookupFailed,
                 onRetry = { viewModel.loadEmergency() },
                 onShare = shareAt,
+                onMap = showOnMap,
             )
+            if (mapReference != null || !state.usingDeviceLocation) {
+                Text(
+                    text =
+                        stringResource(
+                            if (mapReference != null) R.string.explore_map_area_essentials
+                            else R.string.nearby_distance_hint_adelaide
+                        ),
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    modifier = Modifier.fillMaxWidth(),
+                )
+            }
 
             CategorySelector(
                 categories = state.categories,
@@ -184,10 +198,15 @@ fun NearbyScreen(
             )
 
             ResultsSection(
-                selected = state.selected,
-                results = state.results,
-                isLoading = state.isLoading,
-                onShare = shareAt,
+                state = state,
+                onRetry = { state.selected?.let(viewModel::selectCategory) },
+                onMap = showOnMap,
+            )
+            CoordinatesCard(
+                reference = state.reference,
+                onShare = {
+                    shareAt(state.reference.latitude, state.reference.longitude, null)
+                },
             )
         }
     }
@@ -200,9 +219,7 @@ private fun CoordinatesCard(
 ) {
     Card(
         modifier = Modifier.fillMaxWidth(),
-        colors = CardDefaults.cardColors(
-            containerColor = MaterialTheme.colorScheme.surfaceVariant,
-        ),
+        colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceVariant),
     ) {
         Column(
             modifier = Modifier.fillMaxWidth().padding(16.dp),
@@ -255,9 +272,9 @@ private fun CoordinateRow(label: String, value: String) {
 }
 
 /**
- * Emergency summary card. When both lookups failed outright (repository error,
- * not merely "none found"), shows an honest tappable error instead of silently
- * hiding the section — a safety-relevant distinction when travelling.
+ * Emergency summary card. When both lookups failed outright (repository error, not merely "none
+ * found"), shows an honest tappable error instead of silently hiding the section — a
+ * safety-relevant distinction when travelling.
  */
 @Composable
 private fun EmergencySection(
@@ -265,33 +282,42 @@ private fun EmergencySection(
     lookupFailed: Boolean,
     onRetry: () -> Unit,
     onShare: (Double, Double, String?) -> Unit,
+    onMap: (SearchResult) -> Unit,
 ) {
     val hospital = emergency?.hospital
     val police = emergency?.police
     if (hospital == null && police == null) {
-        if (lookupFailed) {
-            Card(
-                modifier = Modifier.fillMaxWidth(),
-                colors = CardDefaults.cardColors(
-                    containerColor = MaterialTheme.colorScheme.errorContainer,
-                ),
-                onClick = onRetry,
+        Card(
+            modifier = Modifier.fillMaxWidth(),
+            colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.errorContainer),
+        ) {
+            Column(
+                modifier = Modifier.fillMaxWidth().padding(16.dp),
+                verticalArrangement = Arrangement.spacedBy(8.dp),
             ) {
-                Column(
-                    modifier = Modifier.fillMaxWidth().padding(16.dp),
-                    verticalArrangement = Arrangement.spacedBy(8.dp),
-                ) {
-                    Text(
-                        text = stringResource(R.string.nearby_emergency_title),
-                        style = MaterialTheme.typography.titleMedium,
-                        color = MaterialTheme.colorScheme.onErrorContainer,
-                    )
-                    Text(
-                        text = stringResource(R.string.nearby_lookup_error),
-                        style = MaterialTheme.typography.bodyMedium,
-                        color = MaterialTheme.colorScheme.onErrorContainer,
-                    )
-                }
+                Text(
+                    text = stringResource(R.string.nearby_emergency_title),
+                    style = MaterialTheme.typography.titleMedium,
+                    color = MaterialTheme.colorScheme.onErrorContainer,
+                )
+                Text(
+                    text = stringResource(R.string.nearby_medical_limits),
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onErrorContainer,
+                )
+                Text(
+                    text = stringResource(
+                        when {
+                            lookupFailed -> R.string.nearby_lookup_error
+                            emergency == null -> R.string.nearby_loading
+                            else -> R.string.nearby_emergency_empty
+                        }
+                    ),
+                    style = MaterialTheme.typography.bodyMedium,
+                    color = MaterialTheme.colorScheme.onErrorContainer,
+                )
+                if (lookupFailed)
+                    TextButton(onClick = onRetry) { Text(stringResource(R.string.map_pack_retry)) }
             }
         }
         return
@@ -299,9 +325,7 @@ private fun EmergencySection(
 
     Card(
         modifier = Modifier.fillMaxWidth(),
-        colors = CardDefaults.cardColors(
-            containerColor = MaterialTheme.colorScheme.errorContainer,
-        ),
+        colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.errorContainer),
     ) {
         Column(
             modifier = Modifier.fillMaxWidth().padding(16.dp),
@@ -312,11 +336,17 @@ private fun EmergencySection(
                 style = MaterialTheme.typography.titleMedium,
                 color = MaterialTheme.colorScheme.onErrorContainer,
             )
+            Text(
+                text = stringResource(R.string.nearby_medical_limits),
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onErrorContainer,
+            )
             hospital?.let {
                 EmergencyRow(
                     label = stringResource(R.string.nearby_nearest_hospital),
                     item = it,
                     onShare = onShare,
+                    onMap = onMap,
                 )
             }
             police?.let {
@@ -324,6 +354,7 @@ private fun EmergencySection(
                     label = stringResource(R.string.nearby_nearest_police),
                     item = it,
                     onShare = onShare,
+                    onMap = onMap,
                 )
             }
         }
@@ -335,6 +366,7 @@ private fun EmergencyRow(
     label: String,
     item: NearbyResult,
     onShare: (Double, Double, String?) -> Unit,
+    onMap: (SearchResult) -> Unit,
 ) {
     Row(
         modifier = Modifier.fillMaxWidth(),
@@ -357,8 +389,15 @@ private fun EmergencyRow(
                 color = MaterialTheme.colorScheme.onErrorContainer,
             )
         }
+        IconButton(onClick = { onMap(item.result) }) {
+            Icon(
+                Icons.Filled.Place,
+                contentDescription = stringResource(R.string.nearby_view_on_map),
+                tint = MaterialTheme.colorScheme.onErrorContainer,
+            )
+        }
         IconButton(
-            onClick = { onShare(item.result.latitude, item.result.longitude, item.result.name) },
+            onClick = { onShare(item.result.latitude, item.result.longitude, item.result.name) }
         ) {
             Icon(
                 Icons.Filled.Share,
@@ -382,9 +421,7 @@ private fun CategorySelector(
             style = MaterialTheme.typography.titleMedium,
         )
         Row(
-            modifier = Modifier
-                .fillMaxWidth()
-                .horizontalScroll(rememberScrollState()),
+            modifier = Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()),
             horizontalArrangement = Arrangement.spacedBy(8.dp),
         ) {
             categories.forEach { category ->
@@ -407,27 +444,50 @@ private fun CategorySelector(
 
 @Composable
 private fun ResultsSection(
-    selected: PoiCategory?,
-    results: List<NearbyResult>,
-    isLoading: Boolean,
-    onShare: (Double, Double, String?) -> Unit,
+    state: NearbyUiState,
+    onRetry: () -> Unit,
+    onMap: (SearchResult) -> Unit,
 ) {
+    val selected = state.selected
+    val results = state.results
+    val isLoading = state.isLoading
+    val lookupFailed = state.categoryLookupFailed
     when {
+        lookupFailed -> {
+            Card(
+                modifier = Modifier.fillMaxWidth(),
+                colors =
+                    CardDefaults.cardColors(
+                        containerColor = MaterialTheme.colorScheme.errorContainer
+                    ),
+            ) {
+                Column(Modifier.padding(16.dp)) {
+                    Text(
+                        stringResource(R.string.nearby_category_error),
+                        color = MaterialTheme.colorScheme.onErrorContainer,
+                    )
+                    TextButton(onClick = onRetry) { Text(stringResource(R.string.map_pack_retry)) }
+                }
+            }
+        }
         isLoading -> {
             Row(
                 modifier = Modifier.fillMaxWidth().padding(vertical = 24.dp),
                 horizontalArrangement = Arrangement.Center,
+                verticalAlignment = Alignment.CenterVertically,
             ) {
                 CircularProgressIndicator()
+                Text(stringResource(R.string.nearby_loading), Modifier.padding(start = 8.dp))
             }
         }
 
         selected != null && results.isEmpty() -> {
             Text(
-                text = stringResource(
-                    R.string.nearby_no_results,
-                    stringResource(selected.labelRes()),
-                ),
+                text =
+                    stringResource(
+                        R.string.nearby_no_results,
+                        stringResource(selected.labelRes()),
+                    ),
                 style = MaterialTheme.typography.bodyMedium,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
                 textAlign = TextAlign.Center,
@@ -442,7 +502,7 @@ private fun ResultsSection(
                     style = MaterialTheme.typography.titleMedium,
                 )
                 results.forEach { item ->
-                    ResultRow(item = item, onShare = onShare)
+                    ResultRow(item = item, onMap = onMap)
                 }
             }
         }
@@ -452,13 +512,11 @@ private fun ResultsSection(
 @Composable
 private fun ResultRow(
     item: NearbyResult,
-    onShare: (Double, Double, String?) -> Unit,
+    onMap: (SearchResult) -> Unit,
 ) {
     Card(
         modifier = Modifier.fillMaxWidth(),
-        colors = CardDefaults.cardColors(
-            containerColor = MaterialTheme.colorScheme.surfaceVariant,
-        ),
+        colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceVariant),
     ) {
         Row(
             modifier = Modifier.padding(horizontal = 16.dp, vertical = 12.dp),
@@ -469,22 +527,25 @@ private fun ResultRow(
                     text = item.result.name,
                     style = MaterialTheme.typography.titleMedium,
                 )
-                item.result.className?.takeIf { it.isNotBlank() }?.let { cls ->
-                    Text(
-                        text = cls,
-                        style = MaterialTheme.typography.bodySmall,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant,
-                    )
-                }
+                item.result.className
+                    ?.takeIf { it.isNotBlank() }
+                    ?.let { cls ->
+                        Text(
+                            text =
+                                cls.substringAfter('=').replace('_', ' ').replaceFirstChar {
+                                    it.uppercase()
+                                },
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        )
+                    }
                 Text(
                     text = formatDistance(item.distanceMeters),
                     style = MaterialTheme.typography.bodySmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                 )
             }
-            IconButton(
-                onClick = { onShare(item.result.latitude, item.result.longitude, item.result.name) },
-            ) {
+            IconButton(onClick = { onMap(item.result) }) {
                 Icon(
                     Icons.Filled.Place,
                     contentDescription = stringResource(R.string.nearby_view_on_map),
@@ -502,22 +563,28 @@ private fun formatDistance(meters: Double): String =
         String.format(Locale.US, "%.1f km", meters / METERS_PER_KM)
     }
 
-/**
- * Fire a geo: intent for [lat]/[lon] through a chooser. Best-effort: if no app
- * can handle it the call is silently ignored rather than crashing.
- */
+/** Dispatch only an explicit geo Share; refusal is visible and returned to the health owner. */
 private fun shareLocation(
     context: android.content.Context,
     lat: Double,
     lon: Double,
     label: String?,
-) {
+): Boolean {
     val coords = String.format(Locale.US, "%.6f,%.6f", lat, lon)
     val query = if (label.isNullOrBlank()) coords else "$coords($label)"
-    val geoUri = Uri.parse("geo:$coords?q=$query")
+    val geoUri = Uri.parse("geo:$coords?q=${Uri.encode(query)}")
     val intent = Intent(Intent.ACTION_VIEW, geoUri)
-    val chooser = Intent.createChooser(intent, context.getString(R.string.nearby_view_on_map))
-    runCatching { context.startActivity(chooser) }
+    val chooser = Intent.createChooser(intent, context.getString(R.string.nearby_share_location))
+    val dispatched = try {
+        context.startActivity(chooser)
+        true
+    } catch (_: ActivityNotFoundException) {
+        false
+    } catch (_: SecurityException) {
+        false
+    }
+    if (!dispatched) Toast.makeText(context, R.string.nearby_share_error, Toast.LENGTH_LONG).show()
+    return dispatched
 }
 
 private const val METERS_PER_KM = 1000.0

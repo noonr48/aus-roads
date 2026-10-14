@@ -28,7 +28,7 @@ import dagger.hilt.android.qualifiers.ApplicationContext
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.delay
-import kotlinx.coroutines.flow.catch
+import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
@@ -36,6 +36,27 @@ import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
 import javax.inject.Inject
+
+/** Fixed GPS seam outcomes: never carry coordinates, queries or provider error text. */
+enum class NavigationGpsEvent(val failed: Boolean) {
+    REGISTRATION_STARTED(false),
+    REGISTRATION_SUCCEEDED(false),
+    REGISTRATION_FAILED(true),
+    REGISTRATION_CANCELED(true),
+    REMOVAL_FAILED(true),
+    COLLECTION_STARTED(false),
+    COLLECTION_FAILED(true),
+    COLLECTION_ENDED(true),
+    RETRIES_EXHAUSTED(true),
+    NO_FIX(true),
+    FIX_STALE(true),
+}
+
+/** Optional, gms-free diagnostic crossing implemented only by the network source. */
+interface DiagnosedNavigationLocationSource : NavigationLocationSource {
+    fun locationUpdates(intervalMs: Long, attempt: Int): Flow<NavigationLocation>
+    fun recordGpsEvent(event: NavigationGpsEvent, attempt: Int)
+}
 
 @HiltViewModel
 class NavigationViewModel @Inject constructor(
@@ -82,10 +103,13 @@ class NavigationViewModel @Inject constructor(
     private var lastHazardQueryTime = 0L
     private var hazardJob: Job? = null
 
-    // GPS health: first-fix signalling + staleness watchdog.
-    private var lastFixElapsedRealtime = 0L
+    // Nullable fix time also handles a genuine fix at monotonic time zero.
+    private var lastFixElapsedRealtime: Long? = null
+    private var gpsSessionStartElapsedRealtime = 0L
+    private var gpsSessionId = 0L
     private var gpsWatchdogJob: Job? = null
     private var gpsRetryCount = 0
+    private var gpsCollectionAttempt = 0
 
     /** Enable/disable spoken guidance. Called from the UI as the setting changes. */
     fun setTtsEnabled(enabled: Boolean) {
@@ -93,6 +117,16 @@ class NavigationViewModel @Inject constructor(
     }
 
     fun startNavigation(routeResult: RouteResult) {
+        // Invalidate old work before cancellation or publication of a new session.
+        gpsSessionId++
+        navigationJob?.cancel()
+        navigationJob = null
+        gpsWatchdogJob?.cancel()
+        gpsWatchdogJob = null
+        recalcJob?.cancel()
+        recalcJob = null
+        hazardJob?.cancel()
+        hazardJob = null
         route = routeResult
         maneuvers = routeResult.maneuvers
         currentManeuverIndex = 0
@@ -110,15 +144,9 @@ class NavigationViewModel @Inject constructor(
         currentSpeedLimitKmh = null
         lastHazardQueryPosition = null
         lastHazardQueryTime = 0L
-        hazardJob?.cancel()
-        hazardJob = null
-        lastFixElapsedRealtime = 0L
+        lastFixElapsedRealtime = null
         gpsRetryCount = 0
-        // A fresh session must never inherit a stale reroute coroutine.
-        recalcJob?.cancel()
-        recalcJob = null
-        navigationJob?.cancel()
-        navigationJob = null
+        gpsCollectionAttempt = 0
 
         if (!hasLocationPermission()) {
             // Privacy contract (docs/notes/privacy.md v0.7): "the app functions
@@ -130,6 +158,8 @@ class NavigationViewModel @Inject constructor(
             _state.update { NavigationState.LocationUnavailable }
             return
         }
+
+        gpsSessionStartElapsedRealtime = SystemClock.elapsedRealtime()
 
         // Initialize TTS for voice guidance
         tts.initialize()
@@ -158,6 +188,7 @@ class NavigationViewModel @Inject constructor(
     }
 
     fun stopNavigation() {
+        gpsSessionId++
         navigationJob?.cancel()
         navigationJob = null
         recalcJob?.cancel()
@@ -170,6 +201,8 @@ class NavigationViewModel @Inject constructor(
         maneuvers = emptyList()
         currentManeuverIndex = 0
         navigationStartTime = 0L
+        lastFixElapsedRealtime = null
+        gpsSessionStartElapsedRealtime = 0L
         savedDestination = null
         lastRecalcTime = 0L
         isRecalculating = false
@@ -202,7 +235,7 @@ class NavigationViewModel @Inject constructor(
         if (nearest != null && nearest.distanceMeters > OFF_ROUTE_THRESHOLD_METERS) {
             val now = System.currentTimeMillis()
             if (!isRecalculating && (now - lastRecalcTime) > RECALC_COOLDOWN_MS) {
-                triggerRecalculation(position, current)
+                triggerRecalculation(position, current.copy(awaitingGpsFix = false, gpsLost = false))
                 return
             }
         }
@@ -277,6 +310,7 @@ class NavigationViewModel @Inject constructor(
 
         lastHazardQueryPosition = position
         lastHazardQueryTime = now
+        val session = gpsSessionId
         hazardJob = viewModelScope.launch {
             try {
                 val ctx = roadHazards.contextAt(
@@ -284,6 +318,7 @@ class NavigationViewModel @Inject constructor(
                     longitude = position.longitude,
                     radiusMeters = HAZARD_QUERY_RADIUS_METERS,
                 )
+                if (!isActive || !isCurrentGpsSession(session)) return@launch
                 currentSpeedLimitKmh = ctx.speedLimitKmh
                 cameraById.putAll(ctx.cameras.associateBy { it.id })
                 // Prune cameras that dropped out of the refreshed window so the
@@ -426,68 +461,94 @@ class NavigationViewModel @Inject constructor(
         ) == PackageManager.PERMISSION_GRANTED
     }
 
-    /**
-     * Collect the location flow with bounded retry. An upstream failure (e.g.
-     * Play Services unavailable, permission revoked mid-drive) previously ended
-     * the collector silently while state stayed Navigating forever; now the
-     * collection is re-attempted with backoff and, when retries are exhausted,
-     * the stale-fix watchdog surfaces the loss instead of frozen numbers.
-     */
+    /** Retry consecutive source failures with backoff; Stop invalidates the whole loop. */
     private fun startGpsTracking() {
+        val session = gpsSessionId
+        val diagnosed = locationProvider as? DiagnosedNavigationLocationSource
         navigationJob = viewModelScope.launch {
-            while (isActive && (
-                _state.value is NavigationState.Navigating ||
-                    _state.value is NavigationState.Recalculating
-                )
-            ) {
+            while (isActive && isCurrentGpsSession(session)) {
+                val attempt = ++gpsCollectionAttempt
+                diagnosed?.recordGpsEvent(NavigationGpsEvent.COLLECTION_STARTED, attempt)
                 try {
-                    locationProvider.locationUpdates(intervalMs = 1000)
-                        .catch {
-                            // Swallow upstream failures here; the surrounding
-                            // loop retries with backoff instead of dying.
+                    val updates = diagnosed?.locationUpdates(intervalMs = 1000, attempt = attempt)
+                        ?: locationProvider.locationUpdates(intervalMs = 1000)
+                    updates.collect { loc ->
+                        if (!isActive || !isCurrentGpsSession(session)) return@collect
+                        gpsRetryCount = 0
+                        lastFixElapsedRealtime = SystemClock.elapsedRealtime()
+                        _state.update {
+                            if (it is NavigationState.Recalculating) {
+                                it.copy(previousState = it.previousState.copy(awaitingGpsFix = false, gpsLost = false))
+                            } else it
                         }
-                        .collect { loc ->
-                            gpsRetryCount = 0
-                            updatePosition(
-                                GeoPoint(longitude = loc.longitude, latitude = loc.latitude),
-                                loc.speedKmh,
-                                loc.bearing,
-                            )
-                        }
+                        updatePosition(
+                            GeoPoint(longitude = loc.longitude, latitude = loc.latitude),
+                            loc.speedKmh,
+                            loc.bearing,
+                        )
+                    }
+                    if (isActive && isCurrentGpsSession(session)) {
+                        diagnosed?.recordGpsEvent(NavigationGpsEvent.COLLECTION_ENDED, attempt)
+                    }
                 } catch (e: CancellationException) {
+                    // Session/collector cancellation is control flow, not a failed fix.
                     throw e
                 } catch (_: Exception) {
-                    // Fall through to bounded retry.
+                    if (isActive && isCurrentGpsSession(session)) {
+                        diagnosed?.recordGpsEvent(NavigationGpsEvent.COLLECTION_FAILED, attempt)
+                    }
                 }
-                if (!isActive ||
-                    (_state.value !is NavigationState.Navigating &&
-                        _state.value !is NavigationState.Recalculating)
-                ) break
+                if (!isActive || !isCurrentGpsSession(session)) break
                 gpsRetryCount++
-                if (gpsRetryCount > MAX_GPS_RETRIES) break
+                if (gpsRetryCount > MAX_GPS_RETRIES) {
+                    markGpsLost(session)
+                    diagnosed?.recordGpsEvent(NavigationGpsEvent.RETRIES_EXHAUSTED, attempt)
+                    break
+                }
                 delay(GPS_RETRY_BASE_MS * gpsRetryCount)
             }
         }
     }
 
-    /**
-     * Watchdog: while Navigating, flag fixes as lost when none arrived within
-     * the staleness window (cold start excluded via [NavigationState.awaitingGpsFix]).
-     */
+    /** Monotonic acquisition/staleness deadline, including a session with no first fix. */
     private fun startGpsWatchdog() {
         gpsWatchdogJob?.cancel()
+        val session = gpsSessionId
         gpsWatchdogJob = viewModelScope.launch {
-            while (isActive) {
+            while (isActive && isCurrentGpsSession(session)) {
                 delay(GPS_WATCHDOG_INTERVAL_MS)
-                val s = _state.value
-                if (s is NavigationState.Navigating && lastFixElapsedRealtime > 0L) {
-                    val stale = SystemClock.elapsedRealtime() - lastFixElapsedRealtime > GPS_STALE_MS
-                    if (stale != s.gpsLost) {
-                        _state.update {
-                            if (it is NavigationState.Navigating) it.copy(gpsLost = stale) else it
-                        }
-                    }
+                if (!isCurrentGpsSession(session)) break
+                val health = gpsState() ?: break
+                val reference = lastFixElapsedRealtime ?: gpsSessionStartElapsedRealtime
+                val stale = SystemClock.elapsedRealtime() - reference >= GPS_STALE_MS
+                if (stale && !health.gpsLost) {
+                    markGpsLost(session)
+                    (locationProvider as? DiagnosedNavigationLocationSource)?.recordGpsEvent(
+                        if (lastFixElapsedRealtime == null) NavigationGpsEvent.NO_FIX
+                        else NavigationGpsEvent.FIX_STALE,
+                        gpsCollectionAttempt,
+                    )
                 }
+            }
+        }
+    }
+
+    private fun gpsState(): NavigationState.Navigating? = when (val s = _state.value) {
+        is NavigationState.Navigating -> s
+        is NavigationState.Recalculating -> s.previousState
+        else -> null
+    }
+
+    private fun isCurrentGpsSession(session: Long): Boolean =
+        gpsSessionId == session && gpsState() != null
+
+    private fun markGpsLost(session: Long) {
+        if (!isCurrentGpsSession(session)) return
+        _state.update {
+            when (it) {
+                is NavigationState.Navigating -> it.copy(gpsLost = true)
+                is NavigationState.Recalculating -> it.copy(previousState = it.previousState.copy(gpsLost = true))
+                else -> it
             }
         }
     }
@@ -518,6 +579,7 @@ class NavigationViewModel @Inject constructor(
         }
         if (ttsEnabled) tts.speakText(context.getString(R.string.nav_recalculating_tts))
 
+        val session = gpsSessionId
         recalcJob = viewModelScope.launch {
             try {
                 val result = routingEngine.computeRoute(
@@ -527,12 +589,13 @@ class NavigationViewModel @Inject constructor(
                         costingProfile = CostingProfile.AUTO,
                     ),
                 )
+                if (!isActive || !isCurrentGpsSession(session)) return@launch
+                val recalculating = _state.value as? NavigationState.Recalculating ?: return@launch
                 route = result
                 maneuvers = result.maneuvers
                 currentManeuverIndex = 0
 
-                // Publish only if a stale reroute did not outlive its session:
-                // stopNavigation()/a newer reroute may already have moved on.
+                // Preserve health raised by the watchdog while routing was suspended.
                 if (_state.value is NavigationState.Recalculating) {
                     _state.update {
                         NavigationState.Navigating(
@@ -545,8 +608,8 @@ class NavigationViewModel @Inject constructor(
                         isOverspeeding = currentState.isOverspeeding,
                         maneuverIndex = 0,
                         totalManeuvers = maneuvers.size,
-                        awaitingGpsFix = false,
-                        gpsLost = false,
+                        awaitingGpsFix = recalculating.previousState.awaitingGpsFix,
+                        gpsLost = recalculating.previousState.gpsLost,
                         cameraWarning = currentState.cameraWarning,
                         )
                     }
@@ -557,9 +620,9 @@ class NavigationViewModel @Inject constructor(
             } catch (e: CancellationException) {
                 throw e
             } catch (_: Exception) {
-                val stillRecalculating = _state.value is NavigationState.Recalculating
-                if (stillRecalculating) {
-                    _state.update { currentState }
+                val previous = (_state.value as? NavigationState.Recalculating)?.previousState
+                if (isActive && isCurrentGpsSession(session) && previous != null) {
+                    _state.update { currentState.copy(gpsLost = previous.gpsLost) }
                     // Announce only when the restore actually happened — the
                     // guard must be captured BEFORE the update flips the state
                     // back to Navigating (previous ordering made this unreachable).
@@ -568,7 +631,7 @@ class NavigationViewModel @Inject constructor(
                     }
                 }
             } finally {
-                isRecalculating = false
+                if (gpsSessionId == session) isRecalculating = false
             }
         }
     }

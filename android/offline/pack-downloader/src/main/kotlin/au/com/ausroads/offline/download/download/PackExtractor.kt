@@ -19,8 +19,10 @@ class PackExtractor {
                         val outFile = File(targetDir, entry.name)
 
                         // Security: prevent zip-slip attacks
-                        if (!outFile.canonicalPath.startsWith(targetDir.canonicalPath)) {
-                            throw SecurityException("Zip entry path escapes target dir: ${entry.name}")
+                        val targetPath = targetDir.canonicalPath
+                        val outputPath = outFile.canonicalPath
+                        if (outputPath != targetPath && !outputPath.startsWith(targetPath + File.separator)) {
+                            throw SecurityException("pack_archive_path_invalid")
                         }
 
                         if (entry.isDirectory) {

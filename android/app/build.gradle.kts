@@ -36,9 +36,9 @@ android {
     namespace = "au.com.ausroads"
     defaultConfig {
         applicationId = "au.com.ausroads"
-        // Shipped release v1.1 (CHANGELOG.md "## v1.1"); code 3 supersedes the v1.0 build.
-        versionCode = 3
-        versionName = "1.1"
+        // v1.2 adds offline places exploration; preserve application/signing identities.
+        versionCode = 4
+        versionName = "1.2"
         // Default runner uses the real AusRoadsApp (@HiltAndroidApp), so
         // instrumented tests exercise the production Hilt graph + HiltWorkerFactory.
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
@@ -65,6 +65,10 @@ android {
         debug {
             applicationIdSuffix = ".debug"
             versionNameSuffix = "-debug"
+            // Explicit emulator-only support. Even with the flag, release stays arm64-only.
+            if (providers.gradleProperty("ausroads.includeX86_64").orNull == "true") {
+                ndk { abiFilters += listOf("arm64-v8a", "x86_64") }
+            }
         }
         release {
             isMinifyEnabled = true
@@ -222,4 +226,7 @@ dependencies {
     androidTestImplementation(libs.androidx.test.espresso.core)
     androidTestImplementation(libs.truth)
     androidTestImplementation(libs.androidx.work.runtime.ktx)
+    // Versions follow the existing Compose BOM; these exercise the actual app screens.
+    androidTestImplementation("androidx.compose.ui:ui-test-junit4")
+    debugImplementation("androidx.compose.ui:ui-test-manifest")
 }

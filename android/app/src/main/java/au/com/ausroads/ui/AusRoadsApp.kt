@@ -6,6 +6,7 @@
 package au.com.ausroads.ui
 
 import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.consumeWindowInsets
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.padding
 import androidx.compose.material3.Icon
@@ -29,7 +30,6 @@ import androidx.navigation.compose.currentBackStackEntryAsState
 import androidx.navigation.compose.rememberNavController
 import au.com.ausroads.ui.navigation.AusRoadsDestination
 import au.com.ausroads.ui.navigation.AusRoadsNavHost
-import au.com.ausroads.ui.navigation.resolveStartDestination
 
 @Composable
 fun AusRoadsApp() {
@@ -49,48 +49,12 @@ fun AusRoadsApp() {
             // route death on tablets too.
             if (!navigationChromeHidden) {
                 NavigationRail {
-                AusRoadsDestination.bottomBarItems.forEach { destination ->
-                    val selected = backStackEntry?.destination?.hierarchy
-                        ?.any { it.route == destination.route } == true
-                    NavigationRailItem(
-                        selected = selected,
-                        onClick = {
-                            navController.navigate(destination.route) {
-                                popUpTo(navController.graph.findStartDestination().id) {
-                                    saveState = true
-                                }
-                                launchSingleTop = true
-                                restoreState = true
-                            }
-                        },
-                        icon = {
-                            Icon(
-                                imageVector = destination.icon,
-                                contentDescription = stringResource(destination.labelRes),
-                            )
-                        },
-                        label = { Text(stringResource(destination.labelRes)) },
-                    )
-                }
-                }
-            }
-            AusRoadsNavHost(
-                navController = navController,
-                startDestination =
-                    resolveStartDestination(backStackEntry?.destination?.route),
-                modifier = Modifier.weight(1f),
-                onNavigationActiveChanged = { navigationChromeHidden = it },
-            )
-        }
-    } else {
-        Scaffold(
-            bottomBar = {
-                if (!navigationChromeHidden) {
-                NavigationBar {
                     AusRoadsDestination.bottomBarItems.forEach { destination ->
-                        val selected = backStackEntry?.destination?.hierarchy
-                            ?.any { it.route == destination.route } == true
-                        NavigationBarItem(
+                        val selected =
+                            backStackEntry?.destination?.hierarchy?.any {
+                                it.route == destination.route
+                            } == true
+                        NavigationRailItem(
                             selected = selected,
                             onClick = {
                                 navController.navigate(destination.route) {
@@ -104,21 +68,61 @@ fun AusRoadsApp() {
                             icon = {
                                 Icon(
                                     imageVector = destination.icon,
-                                    contentDescription = null,
+                                    contentDescription = stringResource(destination.labelRes),
                                 )
                             },
                             label = { Text(stringResource(destination.labelRes)) },
                         )
                     }
                 }
+            }
+            AusRoadsNavHost(
+                navController = navController,
+                // Keep graph identity stable; NavController owns back-stack restoration.
+                startDestination = AusRoadsDestination.Map.route,
+                modifier = Modifier.weight(1f),
+                onNavigationActiveChanged = { navigationChromeHidden = it },
+            )
+        }
+    } else {
+        Scaffold(
+            bottomBar = {
+                if (!navigationChromeHidden) {
+                    NavigationBar {
+                        AusRoadsDestination.bottomBarItems.forEach { destination ->
+                            val selected =
+                                backStackEntry?.destination?.hierarchy?.any {
+                                    it.route == destination.route
+                                } == true
+                            NavigationBarItem(
+                                selected = selected,
+                                onClick = {
+                                    navController.navigate(destination.route) {
+                                        popUpTo(navController.graph.findStartDestination().id) {
+                                            saveState = true
+                                        }
+                                        launchSingleTop = true
+                                        restoreState = true
+                                    }
+                                },
+                                icon = {
+                                    Icon(
+                                        imageVector = destination.icon,
+                                        contentDescription = null,
+                                    )
+                                },
+                                label = { Text(stringResource(destination.labelRes)) },
+                            )
+                        }
+                    }
                 }
-            },
+            }
         ) { innerPadding ->
             AusRoadsNavHost(
                 navController = navController,
-                startDestination =
-                    resolveStartDestination(backStackEntry?.destination?.route),
-                modifier = Modifier.padding(innerPadding),
+                // Keep graph identity stable; NavController owns back-stack restoration.
+                startDestination = AusRoadsDestination.Map.route,
+                modifier = Modifier.padding(innerPadding).consumeWindowInsets(innerPadding),
                 onNavigationActiveChanged = { navigationChromeHidden = it },
             )
         }
