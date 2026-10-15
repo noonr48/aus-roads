@@ -129,23 +129,26 @@ data class DiscoverySql(val sql: String, val args: Array<String>) {
             val args = mutableListOf<String>()
             val clauses =
                 mutableListOf("kind IN ('poi', 'park')", "lat IS NOT NULL", "lon IS NOT NULL")
-            clauses += "lat BETWEEN ? AND ?"
+            // rawQuery binds every argument as TEXT; against a column without REAL/INTEGER
+            // affinity a bare TEXT bound never compares equal-or-in-range with a number, which
+            // would turn a valid catalog into a silent successful-empty list. CAST fixes the type.
+            clauses += "lat BETWEEN CAST(? AS REAL) AND CAST(? AS REAL)"
             args += (request.latitude - deltaLat).coerceAtLeast(-90.0).toString()
             args += (request.latitude + deltaLat).coerceAtMost(90.0).toString()
             when {
                 deltaLon >= 180.0 -> Unit
                 lowLon < -180.0 -> {
-                    clauses += "(lon >= ? OR lon <= ?)"
+                    clauses += "(lon >= CAST(? AS REAL) OR lon <= CAST(? AS REAL))"
                     args += (lowLon + 360.0).toString()
                     args += highLon.toString()
                 }
                 highLon > 180.0 -> {
-                    clauses += "(lon >= ? OR lon <= ?)"
+                    clauses += "(lon >= CAST(? AS REAL) OR lon <= CAST(? AS REAL))"
                     args += lowLon.toString()
                     args += (highLon - 360.0).toString()
                 }
                 else -> {
-                    clauses += "lon BETWEEN ? AND ?"
+                    clauses += "lon BETWEEN CAST(? AS REAL) AND CAST(? AS REAL)"
                     args += lowLon.toString()
                     args += highLon.toString()
                 }

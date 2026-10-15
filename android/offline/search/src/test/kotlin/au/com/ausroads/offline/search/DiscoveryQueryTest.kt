@@ -66,9 +66,17 @@ class DiscoveryQueryTest {
     }
 
     @Test
+    fun `coordinate bounds are cast to REAL so untyped catalog columns still match`() {
+        val query = DiscoverySql.build(request("parks"), ExploreCategory.NATURE)
+        assertThat(query.sql).contains("lat BETWEEN CAST(? AS REAL) AND CAST(? AS REAL)")
+        assertThat(query.sql).contains("lon BETWEEN CAST(? AS REAL) AND CAST(? AS REAL)")
+        assertThat(query.sql.count { it == '?' }).isEqualTo(query.args.size)
+    }
+
+    @Test
     fun `dateline box has two longitude arms`() {
         val query = DiscoverySql.build(DiscoveryRequest(0.0, 179.95, 20), ExploreCategory.COFFEE)
-        assertThat(query.sql).contains("(lon >= ? OR lon <= ?)")
+        assertThat(query.sql).contains("(lon >= CAST(? AS REAL) OR lon <= CAST(? AS REAL))")
         assertThat(query.sql.count { it == '?' }).isEqualTo(query.args.size)
     }
 
