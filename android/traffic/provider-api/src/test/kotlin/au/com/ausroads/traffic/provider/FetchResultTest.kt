@@ -32,6 +32,19 @@ class FetchResultTest {
     }
 
     @Test
+    fun `ordinary empty result is not a Not Modified response`() {
+        assertThat(FetchResult.Empty.notModified).isFalse()
+    }
+
+    @Test
+    fun `Not Modified is explicit and distinct from an ordinary empty result`() {
+        val notModified = FetchResult.Empty.copy(notModified = true)
+
+        assertThat(notModified.notModified).isTrue()
+        assertThat(notModified).isNotEqualTo(FetchResult.Empty)
+    }
+
+    @Test
     fun `data class equality works`() {
         val a = FetchResult(
             events = emptyList(),

@@ -16,7 +16,6 @@ import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
-import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -25,6 +24,8 @@ import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.unit.dp
+import androidx.lifecycle.compose.LifecycleStartEffect
+import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import au.com.ausroads.routing.engine.Maneuver
 
 @Composable
@@ -33,13 +34,21 @@ fun NavigationOverlay(
     onStopNavigation: () -> Unit,
     modifier: Modifier = Modifier,
 ) {
-    val state by viewModel.state.collectAsState()
-    val batteryWarning by viewModel.batteryWarning.collectAsState()
+    LifecycleStartEffect(viewModel) {
+        viewModel.onHostStarted()
+        onStopOrDispose { viewModel.onHostStopped() }
+    }
+
+    val state by viewModel.state.collectAsStateWithLifecycle()
+    val batteryWarning by viewModel.batteryWarning.collectAsStateWithLifecycle()
 
     // Keep screen on during navigation
     val view = LocalView.current
-    DisposableEffect(state is NavigationState.Navigating || state is NavigationState.Recalculating) {
-        view.keepScreenOn = state is NavigationState.Navigating || state is NavigationState.Recalculating
+    val keepScreenOn = state is NavigationState.Navigating ||
+        state is NavigationState.Recalculating ||
+        state is NavigationState.RecalculationFailed
+    DisposableEffect(keepScreenOn) {
+        view.keepScreenOn = keepScreenOn
         onDispose { view.keepScreenOn = false }
     }
 
@@ -55,7 +64,9 @@ fun NavigationOverlay(
             )
         }
         is NavigationState.LocationUnavailable -> {
-            LocationUnavailableBanner(
+            NavigationRecoveryBanner(
+                message = stringResource(R.string.nav_location_unavailable),
+                retryLabel = stringResource(R.string.nav_retry_location),
                 onRetry = viewModel::retryLocation,
                 onStop = {
                     viewModel.stopNavigation()
@@ -100,6 +111,28 @@ fun NavigationOverlay(
                 )
             }
         }
+        is NavigationState.RecalculationFailed -> {
+            Column(modifier = modifier) {
+                NavigationRecoveryBanner(
+                    message = stringResource(R.string.nav_recalc_failed),
+                    retryLabel = stringResource(R.string.nav_retry_route),
+                    onRetry = viewModel::retryRecalculation,
+                    onStop = {
+                        viewModel.stopNavigation()
+                        onStopNavigation()
+                    },
+                )
+                NavigationBanner(
+                    maneuver = s.previousState.currentManeuver,
+                    remainingDistance = s.previousState.remainingDistanceMeters,
+                    remainingDuration = s.previousState.remainingDurationSeconds,
+                    currentSpeed = s.previousState.currentSpeedKmh,
+                    speedLimit = s.previousState.speedLimitKmh,
+                    isOverspeeding = s.previousState.isOverspeeding,
+                    onStop = null,
+                )
+            }
+        }
         is NavigationState.Arrived -> {
             ArrivalBanner(
                 onStop = {
@@ -113,7 +146,9 @@ fun NavigationOverlay(
 }
 
 @Composable
-private fun LocationUnavailableBanner(
+private fun NavigationRecoveryBanner(
+    message: String,
+    retryLabel: String,
     onRetry: () -> Unit,
     onStop: () -> Unit,
     modifier: Modifier = Modifier,
@@ -131,13 +166,13 @@ private fun LocationUnavailableBanner(
             verticalArrangement = Arrangement.spacedBy(8.dp),
         ) {
             Text(
-                text = stringResource(R.string.nav_location_unavailable),
+                text = message,
                 style = MaterialTheme.typography.bodyMedium,
                 color = MaterialTheme.colorScheme.onErrorContainer,
             )
             Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                 TextButton(onClick = onRetry) {
-                    Text(stringResource(R.string.nav_retry_location))
+                    Text(retryLabel)
                 }
                 TextButton(onClick = onStop) {
                     Text(stringResource(R.string.nav_end))
@@ -186,7 +221,7 @@ private fun NavigationBanner(
     currentSpeed: Double,
     speedLimit: Int?,
     isOverspeeding: Boolean,
-    onStop: () -> Unit,
+    onStop: (() -> Unit)?,
     modifier: Modifier = Modifier,
 ) {
     Box(
@@ -259,8 +294,10 @@ private fun NavigationBanner(
                 }
 
                 // Stop button
-                TextButton(onClick = onStop) {
-                    Text(stringResource(R.string.nav_end))
+                onStop?.let { stop ->
+                    TextButton(onClick = stop) {
+                        Text(stringResource(R.string.nav_stop))
+                    }
                 }
             }
         }

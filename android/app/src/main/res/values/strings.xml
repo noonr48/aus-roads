@@ -13,22 +13,48 @@
     <string name="map_osm_attribution">© OpenStreetMap contributors</string>
 
     <!-- Pins screen -->
-    <string name="pins_empty">No pins yet. Long-press the map to drop a pin.</string>
+    <string name="pins_empty">No pins yet. Hold the map to drop one, or add coordinates here.</string>
     <string name="pins_title">Saved pins</string>
+    <string name="pins_loading">Loading saved pins…</string>
+    <string name="pins_load_failed">Couldn’t load your saved pins. You can still add a pin or try loading them again.</string>
+    <string name="pins_retry_load">Retry saved pins</string>
     <string name="pin_add">Add pin</string>
     <string name="pin_delete">Delete</string>
+    <string name="pin_delete_confirm_title">Delete “%1$s”?</string>
+    <string name="pin_delete_confirm_message">This removes the saved pin from this device.</string>
+    <string name="pin_update_failed">Couldn’t update “%1$s”. Please try again.</string>
+    <string name="pin_delete_failed">Couldn’t delete “%1$s”. Please try again.</string>
+    <string name="pin_discard_confirm_title">Discard unsaved pin changes?</string>
+    <string name="pin_discard_confirm_message">Your changes haven’t been saved.</string>
+    <string name="pin_discard">Discard</string>
+    <string name="pin_keep_editing">Keep editing</string>
+    <string name="pin_try_again">Try again</string>
     <string name="pin_name_label">Name</string>
+    <string name="pin_name_required">Enter a name</string>
     <string name="pin_latitude_label">Latitude</string>
     <string name="pin_longitude_label">Longitude</string>
-    <string name="pin_add_confirm">Add</string>
-    <string name="pin_rename_confirm">Rename</string>
+    <string name="pin_add_confirm">Add pin</string>
+    <string name="pin_rename_confirm">Save pin changes</string>
     <string name="pin_edit_title">Edit pin</string>
-    <string name="pin_color_label">Color</string>
+    <string name="pin_color_label">Colour</string>
+    <string name="pin_color_selected">Colour: %1$s</string>
+    <string name="pin_color_forest_green">Forest green</string>
+    <string name="pin_color_teal">Teal</string>
+    <string name="pin_color_brown">Brown</string>
+    <string name="pin_color_magenta">Magenta</string>
+    <string name="pin_color_slate">Slate</string>
+    <string name="pin_color_indigo">Indigo</string>
+    <string name="pin_latitude_range">Enter a latitude from −90 to 90</string>
+    <string name="pin_longitude_range">Enter a longitude from −180 to 180</string>
     <string name="cancel">Cancel</string>
     <string name="pin_dropped_default">Dropped pin</string>
     <string name="pin_edit">Edit pin %s</string>
+    <string name="pin_delete_named">Delete pin %s</string>
     <string name="select_color">Select color</string>
     <string name="route_history_select">Select route to %s</string>
+    <string name="route_waypoint_required">Enter a waypoint</string>
+    <string name="route_waypoint_discard_title">Discard waypoint draft?</string>
+    <string name="route_waypoint_discard_message">The waypoint you typed hasn’t been added.</string>
 
     <!-- Settings screen -->
     <string name="settings_title">Settings</string>
@@ -49,6 +75,10 @@
     <string name="settings_vic_api_key">VIC API key</string>
     <string name="settings_vic_api_key_placeholder">From opendata.transport.vic.gov.au</string>
     <string name="settings_show_attribution">Attribution overlay</string>
+    <string name="settings_route_preferences">Route preferences</string>
+    <string name="settings_save_failed">Couldn’t save “%1$s”. Try again.</string>
+    <string name="settings_retrying">Retrying…</string>
+    <string name="action_dismiss">Dismiss</string>
     <string name="settings_map_pack">Map pack</string>
     <string name="settings_map_pack_installed">Installed</string>
     <string name="settings_map_pack_none">Not installed</string>
@@ -125,12 +155,12 @@
 
     <!-- Route -->
     <string name="route_directions">Directions</string>
-    <string name="route_close">Close</string>
+    <string name="route_close">Close route</string>
     <string name="route_failed">Routing failed</string>
     <string name="route_network_error">Network error</string>
     <string name="route_not_found">No route found. Your destination may be outside the downloaded map area.</string>
     <string name="route_engine_unavailable">Directions aren\'t available yet. Install the SA map pack with routing to enable turn-by-turn directions.</string>
-    <string name="route_start_navigation">Start Navigation</string>
+    <string name="route_start_navigation">Start navigation</string>
     <string name="route_enable_precise_location">Enable precise location</string>
     <string name="route_open_location_settings">Open location settings</string>
     <string name="route_precise_location_explanation">Map browsing works with approximate location, but live turn-by-turn directions need precise location.</string>
@@ -171,7 +201,7 @@
     <string name="download_failed_invalid">The map pack information was invalid. Please try again later.</string>
     <string name="download_failed_checksum">The downloaded map pack was corrupt. Please try again.</string>
     <string name="download_unavailable_in_build">Map-pack downloads aren\'t available in this build.</string>
-    <string name="download_failed_generic">Download failed: %s</string>
+    <string name="download_failed_generic">The map pack couldn’t be installed. Your current map is still available — try again.</string>
     <string name="settings_map_pack_download_unavailable">Map-pack downloads are available in the standard build.</string>
 
     <!-- Map coverage banner -->
@@ -185,7 +215,14 @@
     <!-- Route history -->
     <string name="route_history_title">Recent routes</string>
     <string name="route_history_empty">No recent routes</string>
+    <string name="route_history_loading">Loading recent routes…</string>
+    <string name="route_history_load_failed">Recent routes couldn’t be loaded. Try again.</string>
+    <string name="route_history_save_failed">Couldn’t save this route to history.</string>
     <string name="route_history_from">From: %s</string>
+    <string name="route_history_delete">Delete route to %1$s</string>
+    <string name="route_history_delete_confirm_title">Delete route to “%1$s”?</string>
+    <string name="route_history_delete_confirm_message">This removes the route from recent routes on this device.</string>
+    <string name="route_history_delete_failed">Couldn’t delete the route to “%1$s”. Please try again.</string>
 
     <!-- Congestion legend -->
     <string name="congestion_legend_title">Traffic</string>
@@ -193,9 +230,13 @@
     <!-- Map screen extras -->
     <string name="map_history_button">History</string>
     <string name="map_my_location">My location</string>
+    <string name="map_canvas_description">Interactive map. Hold or press Enter to drop a pin; drag or use arrow keys to pan; pinch or use plus and minus to zoom.</string>
+    <string name="map_open_place_details">Open details for %1$s</string>
     <string name="map_locating">Locating…</string>
     <string name="map_location_unavailable">Location unavailable — check that location is turned on.</string>
     <string name="map_location_permission_settings">Location permission is blocked. Enable it in the app’s system settings.</string>
+    <string name="map_location_permission_denied">Location wasn’t shared. You can keep browsing the map or try My location again.</string>
+    <string name="map_location_outside_coverage">Your location is outside the active map pack. Manage map packs or keep browsing here.</string>
     <string name="map_route_origin_unavailable">Directions need a starting point away from the destination. Move the map or enable location, then try again.</string>
     <string name="map_loading">Loading offline map…</string>
     <string name="map_load_failed">The offline map could not load. Check or reinstall the map pack.</string>
@@ -205,8 +246,10 @@
     <string name="map_pin_saved">Saved “%s”</string>
     <string name="map_pin_save_failed">Couldn’t save this pin. Please try again.</string>
     <string name="map_pin_deleted">Deleted “%s”</string>
-    <string name="action_save">Save</string>
+    <string name="action_save">Save pin</string>
+    <string name="action_save_pin">Save pin</string>
     <string name="action_undo">Undo</string>
+    <string name="action_retry">Retry</string>
     <string name="route_computing">Routing…</string>
 
     <!-- Pin default name -->
@@ -232,16 +275,27 @@
     <string name="nearby_refresh_location">Refresh my location</string>
     <string name="nearby_open_location_settings">Open location settings</string>
     <string name="nearby_location_permission_settings">Location permission is blocked; enable it in system settings.</string>
+    <string name="nearby_location_permission_denied">Location wasn’t shared. Nearby will keep using Adelaide CBD.</string>
     <string name="nearby_coordinate_decimal">Decimal</string>
     <string name="nearby_coordinate_dms">DMS</string>
     <string name="nearby_coordinate_mgrs">MGRS</string>
     <string name="nearby_share_location">Share location</string>
+    <string name="nearby_share_named_location">Share %1$s location</string>
     <string name="nearby_view_on_map">View on map</string>
+    <string name="nearby_view_named_on_map">View %1$s on map</string>
     <string name="nearby_no_results">No %1$s found nearby</string>
-    <string name="nearby_search_unavailable">Nearby data is still preparing. If this persists, re-download the map pack and try again.</string>
+    <string name="nearby_try_adelaide">Try Adelaide CBD</string>
+    <string name="nearby_search_unavailable">Nearby data is still preparing. If this persists, manage the map pack and try again.</string>
+    <string name="nearby_query_failed">Couldn’t load nearby places. Try again.</string>
     <string name="nearby_nearest_hospital">Nearest hospital</string>
     <string name="nearby_nearest_police">Nearest police</string>
     <string name="nearby_emergency_title">Emergency</string>
+    <string name="nearby_emergency_loading">Finding nearby emergency services…</string>
+    <string name="nearby_emergency_preparing">Emergency details will appear when the map data is ready.</string>
+    <string name="nearby_emergency_empty">No emergency services were found in this map pack.</string>
+    <string name="nearby_emergency_failed">Some emergency-service details couldn’t be loaded. Try again.</string>
+    <string name="nearby_share_copied_fallback">No sharing app was available. The location was copied instead.</string>
+    <string name="nearby_clipboard_label">Shared location</string>
     <string name="nearby_categories_title">Find nearby</string>
     <string name="nearby_results_title">Results</string>
     <string name="nearby_distance_meters">%1$.0f m</string>

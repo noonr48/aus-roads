@@ -21,18 +21,30 @@ Verified before writing this plan (against the live tree, not the spec sketches)
 | `routing:engine-api` | `RouteRequest.options: RouteOptions`; `RouteOptions(avoidTolls, avoidUnsealed, avoidFerries)` | `routing/engine-api/.../RoutingEngine.kt` | **Three flags only** — not the wider `preferSealed/shortest/topSpeedKph` set the spec sketched. `avoidUnsealed` → low `use_tracks`. `RouteResult.warnings` exists. |
 | `offline:search` | `SearchRepository.browseByCategory(cat, limit=200)`, `nearestByCategory(lat,lon,cat,limit=20,maxDistanceDegrees=0.5)`, `maxspeedNear(lat,lon,maxDistanceDegrees=0.05): Int?` | `offline/search/.../SearchRepository.kt` | `SearchResult(name, kind, className, latitude, longitude)`. `maxspeedNear` reads the `road_speed` table (49,493 SA rows) and **tolerates packs without it** (returns null). |
 | `offline:search` | `PoiCategory` — `FUEL, EV_CHARGING, HOSPITAL(hospital+clinic), PHARMACY, POLICE, FIRE_STATION, TOILETS, DRINKING_WATER, CAMPING(camp_site+caravan_site), SUPERMARKET` | `offline/search/.../PoiCategory.kt` | 10 categories, OSM-class-backed. |
-| `feature:navigation` | `NavigationLocationProvider` (Hilt `@Singleton`) → `locationUpdates(intervalMs): Flow<NavigationLocation>`; `NavigationOverlay`, `NavigationViewModel`, `NavigationState` | `feature/navigation/.../` | **Backed by Play Services `FusedLocationProviderClient`** — this is the GPS source the whole Nearby/Speed/Tracks/Trip stack reuses (see §3). |
+| `feature:navigation` | `NavigationLocationProvider` (Hilt `@Singleton`) → `locationUpdates(intervalMs): Flow<NavigationLocation>`; `NavigationOverlay`, `NavigationViewModel`, `NavigationState` | `feature/navigation/.../` | Backed by Play Services in `withNetwork`. Map/Nearby additionally have matching flavor source-set providers: fused in `withNetwork`, platform `LocationManager` in `offline` (see §3). |
 
 ### Flavor / permission reality (load-bearing for every GPS feature)
 
 `app/build.gradle.kts` defines one flavor dimension `network` with two flavors:
 
-- **`offline`** — no `INTERNET`, **no location at all.** The base `AndroidManifest.xml` actively *strips* `ACCESS_COARSE/FINE_LOCATION` via `tools:node="remove"` as a safety net against transitive deps.
-- **`withNetwork`** — `src/withNetwork/AndroidManifest.xml` re-adds `INTERNET`, `ACCESS_NETWORK_STATE`, `ACCESS_WIFI_STATE`, **`FOREGROUND_SERVICE_DATA_SYNC`**, **`POST_NOTIFICATIONS`**, and `ACCESS_COARSE/FINE_LOCATION`.
+- **`offline`** — no `INTERNET`; the shared manifest intentionally declares
+  `ACCESS_COARSE/FINE_LOCATION` for opt-in foreground features. Its provider uses
+  Android `LocationManager`, so location stays on-device without a network path.
+- **`withNetwork`** — the same foreground location pair plus `INTERNET`,
+  `ACCESS_NETWORK_STATE`, `ACCESS_WIFI_STATE`,
+  **`FOREGROUND_SERVICE_DATA_SYNC`**, and **`POST_NOTIFICATIONS`**. Its current map
+  provider uses Play Services fused location.
 
-**Consequence:** any feature needing live GPS or notifications is `withNetwork`-only and must degrade gracefully (or be absent) on `offline`. **`FOREGROUND_SERVICE_LOCATION` is not yet declared** — the manifest has `FOREGROUND_SERVICE_DATA_SYNC`. Track recording (§2.2B) must **add `FOREGROUND_SERVICE_LOCATION`** to the `withNetwork` manifest. Single ABI: **arm64-v8a only** (relevant to §2.2D, the 16KB fix).
+**Consequence:** foreground device fixes are available in either flavor after an
+explicit grant, and every flow still needs a denial/no-fix fallback. This does not
+authorize continuous or screen-off tracking. **`FOREGROUND_SERVICE_LOCATION` is not
+declared**; Track recording (§2.2B) needs a separate service/policy decision before
+it ships. Single ABI: **arm64-v8a only** (relevant to §2.2D, the 16KB fix).
 
-**Reference point.** The map already centres on `AdelaideCbd = LatLng(-34.92, 138.62)` (`ui/map/MapScreen.kt:116`) and exposes `mapLibreMap.cameraPosition.target`. Until a shared GPS provider lands, **the map-pack centre / current camera target is the offline-safe reference point** for Nearby/Coordinates/Fuel.
+**Reference point.** Map and Nearby first use a fresh, permission-backed device fix
+when available. Without a grant or usable fix they use the explicit chosen/map
+reference point, ultimately `AdelaideCbd = LatLng(-34.92, 138.62)`. Copy must say
+which source is active.
 
 ### On-device verification harness (available now)
 
@@ -45,9 +57,11 @@ GPS-dependent features add a fourth rung: **real movement** OR `adb emu geo fix`
 
 ---
 
-# Sub-phase 2A — **This session** (offline-safe, no new permissions)
+# Sub-phase 2A — **This session** (offline-safe, no required grant)
 
-Two features that need **zero GPS and zero new permissions** — the fastest proven-logic-to-UI wins, and both run on the `offline` flavor.
+Two features whose core value remains available without a location grant. Nearby
+can additionally use the accepted opt-in foreground location contract; both run in
+the `offline` flavor.
 
 ## 2A.1 — Nearby tab  ·  *IN PROGRESS this session*
 
@@ -58,7 +72,7 @@ Two features that need **zero GPS and zero new permissions** — the fastest pro
 | **UI surface** | A new **fourth bottom-bar tab `Nearby`** (`AusRoadsDestination.Nearby`, added to `bottomBarItems` in `ui/navigation/AusRoadsNavHost.kt`). Screen = a vertical list of category chips (Fuel / Hospital / Police / Toilets / Camping / Water / EV / Pharmacy / Fire / Supermarket → `PoiCategory`), a **Coordinates card** at top (current reference point in DD + DMS + MGRS, one-tap copy of MGRS), an **Emergency strip** (nearest Hospital + nearest Police, distance + bearing) pinned near the top, and per-category nearest results with distance + tap-to-route. |
 | **ViewModel** | new `NearbyViewModel` (`ui/nearby/`), Hilt. Holds `referencePoint: GeoPoint` (map camera target initially), `selectedCategory`, `results: List<NearbyResult>`. Calls `nearestByCategory(...)`; for emergency, `nearestByCategory(cat=HOSPITAL/POLICE, limit=1)`; coordinates via `CoordinateFormatter`; distance/bearing via `MeasureGeometry.bearingDegrees` + path length. |
 | **Verified logic wired** | `SearchRepository.nearestByCategory` / `browseByCategory`; `PoiCategory`; `CoordinateFormatter.{decimalDegrees,dms,mgrs}`; `MeasureGeometry.bearingDegrees`. |
-| **Data / location / flavor** | `search.db` (already opened by the app). **Reference point = map-pack centre / chosen point** — works on **both flavors, no permission.** GPS ("near *me*") is a 2B follow-up via the shared provider (§3). |
+| **Data / location / flavor** | `search.db` (already opened by the app). On both flavors, use a fresh opt-in foreground fix when available; otherwise use the chosen map point / Adelaide fallback and label it honestly. No network is required. |
 | **On-device verification** | (1) `NearbyViewModelTest`: fake `SearchRepository` returns known SA servos → assert ordering/distance/bearing + emergency selection. (2) Screenshot+vision: "Nearby tab shows a coordinates card and a fuel list with km distances." (3) `adb input tap` a category chip → re-screenshot shows that category's results; tap MGRS → clipboard assert. Spot-check a couple of SA towns that nearest hospital/police are genuinely nearest. |
 | **Effort / risk** | **M / Low.** All logic verified; pure read path; no permission. Only real care: emergency selection correctness (safety-relevant) and reference-point clarity in copy ("near map centre", not "near you", until GPS lands). |
 
@@ -79,9 +93,12 @@ Two features that need **zero GPS and zero new permissions** — the fastest pro
 
 ---
 
-# Sub-phase 2B — **Next** (GPS, foreground service, sensors)
+# Sub-phase 2B — **Next** (location-driven services and sensors)
 
-Everything here needs live GPS, so it is **`withNetwork`-only** and depends on the shared LocationProvider (§3) landing first. Verification needs **real movement** or `adb emu geo fix` / mock location.
+The accepted foreground permission is already available in both flavors. Features
+that run only while their UI is foreground can use it; continuous or screen-off
+features remain separately scoped service work. Verification needs **real movement**
+or `adb emu geo fix` / mock location.
 
 ## 2B.1 — Track recording + GPX import/export
 
@@ -90,7 +107,7 @@ Everything here needs live GPS, so it is **`withNetwork`-only** and depends on t
 | **UI surface** | A **Record control** (start/pause/resume/stop) — surfaced on the Map tab as an overlay FAB *and* a section in a Tracks list. A new **Tracks screen** (reachable from Nearby or its own tab/entry) backed by `data:tracks`: list of saved tracks (name, distance, point count, date), tap → render the track polyline on the map. **GPX export/import via the Storage Access Framework** (`ACTION_CREATE_DOCUMENT` / `ACTION_OPEN_DOCUMENT`) — no storage permission needed. |
 | **ViewModel** | `TrackRecordingViewModel` (drives `TrackRecorder`, feeds it `LocationFix`es from the shared provider, exposes live `RecorderState`); `TracksListViewModel` (over `TrackRepository`). GPX I/O calls `Gpx.write` / `Gpx.read` and persists via `TrackDao`. |
 | **Verified logic wired** | `TrackRecorder` (sampling state machine), `data:tracks` (Room store + `TrackStats`), `core:geo.Gpx` (GPX 1.1 codec). |
-| **Data / location / flavor** | **GPS required → `withNetwork` only.** **Must add `FOREGROUND_SERVICE_LOCATION`** to `src/withNetwork/AndroidManifest.xml` and run a **foreground `LocationService`** (notification, Doze-survivable). **GPX import/export/render is permission-free and works on `offline`** (decouple the codec/list UI from the recorder so the `offline` flavor still imports/views tracks). |
+| **Data / location / flavor** | Foreground fixes are available in both flavors. The planned long-running recorder is currently scoped to `withNetwork`; adding `FOREGROUND_SERVICE_LOCATION` and a visible foreground service requires a separate policy/lifecycle review. GPX import/export/render remains permission-free in `offline`. |
 | **On-device verification** | (1) `TrackRecordingViewModelTest` + `TracksListViewModelTest` with synthetic fixes (sampling gate, distance accrual, pause/resume) — extends existing `feature:trip` tests at the VM layer. (2) **Real movement OR `adb emu geo fix <lon> <lat>` sequence** to drive the foreground service; screencap the live distance/point counter incrementing; verify it survives screen-off/backgrounding (Doze) and process death. (3) SAF round-trip: export → re-open the `.gpx` in a viewer; import a foreign GPX → renders. (4) `offline` flavor: import/render works, record UI absent. |
 | **Effort / risk** | **L / Med-High.** The foreground service + Doze/OEM background-throttling + process-death recovery are the real work (the logic is done). Mock-location injection for CI-on-device is fiddly. |
 
@@ -101,7 +118,7 @@ Everything here needs live GPS, so it is **`withNetwork`-only** and depends on t
 | **UI surface** | Extend the existing **`NavigationOverlay`** (`feature:navigation`): a **posted-limit badge** (the maxspeed for the current road) and an **alert state** (subtle chime + visual flash) when speed exceeds limit + margin. |
 | **ViewModel** | Extend `NavigationViewModel`: on each `NavigationLocation`, call `SpeedLimitMonitor.onLocation(fix, postedLimit)` where `postedLimit = search.maxspeedNear(lat, lon)`. Expose `SpeedAlert` + current limit to the overlay. Margin is a Settings value. |
 | **Verified logic wired** | `feature:trip.SpeedLimitMonitor` (hysteresis state machine) + `offline:search.maxspeedNear` (the 49,493-row `road_speed` table). |
-| **Data / location / flavor** | `road_speed` table in `search.db` (present). **GPS speed → `withNetwork` only.** Degrades silently when `maxspeedNear` returns null (no false alarms; tolerant of packs without the table). |
+| **Data / location / flavor** | `road_speed` table in `search.db` (present). Either flavor can use speed from an opt-in foreground fix while navigation is visible. Degrades silently when `maxspeedNear` returns null (no false alarms; tolerant of packs without the table). |
 | **On-device verification** | (1) `NavigationViewModelTest`: synthetic speed series vs a fixed limit → over/clear edges + margin + null-limit-is-silent. (2) `adb emu geo fix` a path along a known-limit SA road while feeding speed → screencap the badge + alert appearing/clearing. (3) Spot-check the posted limit matches reality on a few SA highways; confirm parallel-road mismatch is acceptable (true snapping waits for the P4 `trace_attributes` symbol — do **not** attempt map-matching now). |
 | **Effort / risk** | **M / Med.** Logic verified; risk is **nearest-segment picking the wrong parallel road** without map-matching — mitigate with the heading-aware nearest already in the lookup, and accept the known limit. |
 
@@ -112,11 +129,14 @@ Everything here needs live GPS, so it is **`withNetwork`-only** and depends on t
 | **UI surface** | A **glanceable HUD panel** during navigation (toggle on `NavigationOverlay`, or a compact strip): moving time, avg speed, max speed, distance today, and **daylight remaining** (large type, dimmable). |
 | **ViewModel** | Extend `NavigationViewModel` (or a dedicated `TripComputerViewModel`): feed `TripComputer.onLocation(fix)`; expose `TripStats`. Daylight from `SunCalc.daylightRemaining(now, lat, lon)`. |
 | **Verified logic wired** | `feature:trip.TripComputer` (moving/stopped partition, avg/max) + `core:geo.SunCalc`. |
-| **Data / location / flavor** | **GPS for live speed → `withNetwork`.** Daylight is pure astronomy — **works on `offline`** given the reference point + clock, so the daylight readout can appear without GPS. No pack change. |
+| **Data / location / flavor** | Either flavor can use an opt-in foreground fix for live speed while the HUD is visible. Daylight is pure astronomy and also works from the chosen reference point + clock. No pack change. |
 | **On-device verification** | (1) `TripComputerViewModelTest`: synthetic fixes → moving avg excludes stops, max captured, reset; `SunCalc` vs Adelaide/Coober Pedy/Ceduna almanac tables within minutes. (2) Screenshot+vision: "HUD shows moving time, avg speed, and daylight-remaining." (3) Real drive (or geo-fix replay) sanity at dusk: daylight → 0 after sunset; SA UTC+9:30/+10:30 DST correctness explicitly checked. |
 | **Effort / risk** | **M / Low.** Logic done + device-checkable cheaply (daylight needs no GPS). Clamp GPS speed noise on "max". |
 
-**2B exit criteria.** `withNetwork` build green; `FOREGROUND_SERVICE_LOCATION` added and the service Doze-verified; each VM test green; a geo-fix-replay or real-movement screenshot run for each. Shared provider (§3) in place. `code-reviewer` on the diff.
+**2B exit criteria.** Both foreground flows build green. If the recorder service is
+included, its manifest/service decision is reviewed and Doze-verified separately;
+each VM test is green; a geo-fix-replay or real-movement screenshot runs for each.
+Shared provider (§3) in place. `code-reviewer` on the diff.
 
 ---
 
@@ -140,7 +160,7 @@ Everything here needs live GPS, so it is **`withNetwork`-only** and depends on t
 | **UI surface** | A per-pin **"Alert me near here"** toggle + radius on the **Pins** tab (extend `PinsScreen.kt` / `EditPinSheet`). When driving, a notification/chime fires on entering a pin's radius. |
 | **ViewModel** | `ProximityViewModel` (or fold into the recording/nav service): feed `ProximityEngine.onLocation(fix)` with the armed pins as targets; surface `ProximityAlert`s. Runs in the same foreground location service as 2B.1 to share the GPS stream. |
 | **Verified logic wired** | `feature:trip.ProximityEngine` (edge-triggered, hysteresis) reading `data:pins`. |
-| **Data / location / flavor** | Pins = existing local store. **GPS → `withNetwork`.** Deliberately our own distance math, **not** OS/Play geofencing (no extra Play deps / network). |
+| **Data / location / flavor** | Pins = existing local store. Foreground fixes exist in both flavors; the proposed continuous alert service is currently scoped to `withNetwork` and needs its own policy review. Deliberately use our own on-device distance math, not OS/Play geofencing. |
 | **On-device verification** | (1) `ProximityViewModelTest`: synthetic path crossing radii → enter fires once, no re-fire inside, exit re-arms; multi-pin; boundary hysteresis. (2) Geo-fix-replay a path toward a real pin with screen off → notification fires once; no boundary false-positive storm on noisy real GPS. (3) Battery sanity over a multi-hour replay. |
 | **Effort / risk** | **M / Med.** Logic done; risk is **continuous-GPS battery** (tune sampling, ideally share 2B.1's service) and OEM background limits. |
 
@@ -163,18 +183,34 @@ Everything here needs live GPS, so it is **`withNetwork`-only** and depends on t
 
 ## 3. Shared location-source architecture (prerequisite for all 2B/2C GPS features)
 
-**Problem.** Nearby (GPS follow-up), Tracks, Over-speed, Trip-computer, Proximity, and Fuel all need one consistent fix stream, and it must vanish cleanly on the `offline` flavor (which has no location permission at all).
+**Problem.** Nearby, Tracks, Over-speed, Trip-computer, Proximity, and Fuel need one
+consistent fix contract across flavor-specific location implementations, plus an
+honest fallback when permission or a fresh fix is unavailable.
 
-**Decision.** Introduce a single **`LocationProvider`** abstraction (interface in a shared module — `core:common` or a small `core:location`) exposing `fun locationUpdates(intervalMs): Flow<LocationFix>` + `suspend fun lastKnown(): LocationFix?`. **Reuse `feature:navigation`'s `NavigationLocationProvider`** as the `withNetwork` implementation — it already wraps Play-Services `FusedLocationProviderClient` and emits `NavigationLocation` (lat/lon/speedKmh/bearing/accuracy/timestamp). The `offline` flavor binds a **no-op / map-centre provider** (never requests permission; emits the chosen reference point or nothing), so the same ViewModels compile and run on both flavors with the flavor choosing the binding via Hilt.
+**Decision.** Keep one shared foreground permission/freshness contract and
+flavor-specific providers behind matching source-set seams. `withNetwork` uses
+Play Services fused location; `offline` uses Android `LocationManager` and never
+requires network access. Shared consumers receive `LocationFix` data and must
+separately model permission denied, waiting/no fix, device fix, and map fallback.
 
-- **Why not per-feature providers:** duplicated permission logic, multiple concurrent `FusedLocationProviderClient` subscriptions (battery), and inconsistent fix semantics. One provider, one foreground subscription (shared by the 2B.1 service), fan-out via `Flow`.
-- **Why reuse `NavigationLocationProvider` rather than rewrite:** it is already on-device-proven for nav; wrapping it behind the interface is cheaper and lower-risk than a parallel GPS stack.
+- **Why not per-feature permission logic:** duplication creates conflicting prompts,
+  freshness rules, and denial behavior. One permission seam and one active
+  subscription per surface keeps the contract testable.
+- **Why retain flavor-specific providers:** fused location is appropriate for
+  `withNetwork`; the platform provider preserves the offline flavor's no-network and
+  no-Google-Play-Services boundary.
 - **`LocationFix`** = the shared model (lat, lon, speed m/s, bearing, accuracy, time) that `TrackRecorder`/`TripComputer`/`SpeedLimitMonitor`/`ProximityEngine` already consume — adapt `NavigationLocation` to it (km/h ↔ m/s).
-- **Reference-point ladder for offline-safe features (Nearby/Coordinates/Fuel):** GPS `lastKnown` (if `withNetwork` + permission) → else the **map camera target** → else `AdelaideCbd`. Copy must say which ("near map centre" vs "near you").
+- **Reference-point ladder for offline-safe features (Nearby/Coordinates/Fuel):**
+  fresh permission-backed fix (either flavor) → chosen/map camera target →
+  `AdelaideCbd`. Copy must say which ("using your device location" vs fallback).
 
-**Verification.** A `LocationProviderTest` over a fake; flavor-binding smoke test (the `offline` build must not pull a `FusedLocationProviderClient` subscription — assert no location-permission request on `offline`).
+**Verification.** Provider/freshness tests over fakes; flavor smoke tests proving
+`offline` uses `LocationManager`, contains no `INTERNET`, and supports grant,
+approximate grant, denial, and fallback without linking the fused client.
 
-**Effort / risk:** **M / Med.** Mostly a clean interface + Hilt flavor binding over an existing provider; risk is the foreground-service lifecycle and making the `offline` no-op truly inert.
+**Effort / risk:** **M / Med.** The foreground seam exists; remaining risk is
+consistent freshness/accuracy semantics and keeping any future long-running service
+outside ADR 0008 until separately reviewed.
 
 ## 4. The 16KB native-lib alignment fix
 
@@ -202,10 +238,10 @@ Everything here needs live GPS, so it is **`withNetwork`-only** and depends on t
 |---|---|---|---|---|---|
 | **2A** | Nearby tab (POI + coords + emergency) | both | none | M | Low |
 | **2A** | Routing avoid-options toggles | both | none | S | Low |
-| **2B pre** | Shared `LocationProvider` (§3) | flavor-split | — | M | Med |
+| **2B pre** | Harden the shared location contract (§3) | both, flavor-specific providers | none | M | Med |
 | **2B** | Track recording + GPX (SAF) | withNetwork (GPX on both) | `FOREGROUND_SERVICE_LOCATION` | L | Med-High |
-| **2B** | Over-speed alert | withNetwork | none (perms present) | M | Med |
-| **2B** | Trip-computer overlay | withNetwork (daylight on both) | none | M | Low |
+| **2B** | Over-speed alert while navigation is foreground | both | none (foreground pair present) | M | Med |
+| **2B** | Trip-computer overlay while foreground | both | none | M | Low |
 | **2C** | Trip-share / overdue check-in | withNetwork (compose on both) | `SEND_SMS` only if auto-send | M | Med |
 | **2C** | Proximity / geofence pin alerts | withNetwork | none | M | Med |
 | **2C** | Fuel / servo planner | both | none | S-M | Low |

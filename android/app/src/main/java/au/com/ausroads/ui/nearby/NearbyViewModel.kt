@@ -58,7 +58,10 @@ data class NearbyUiState(
     val selected: PoiCategory? = null,
     val results: List<NearbyResult> = emptyList(),
     val isLoading: Boolean = false,
+    val categoryError: Boolean = false,
     val emergency: EmergencyInfo? = null,
+    val isEmergencyLoading: Boolean = false,
+    val emergencyError: Boolean = false,
     val searchUnavailable: Boolean = false,
 )
 
@@ -100,7 +103,13 @@ class NearbyViewModel @Inject constructor(
                     loadEmergency()
                     if (pendingCategory != null) selectCategory(pendingCategory)
                 } else {
-                    _uiState.update { it.copy(searchUnavailable = true) }
+                    _uiState.update {
+                        it.copy(
+                            searchUnavailable = true,
+                            isLoading = false,
+                            isEmergencyLoading = false,
+                        )
+                    }
                 }
             }
         }
@@ -118,7 +127,12 @@ class NearbyViewModel @Inject constructor(
         val selectedCategory = _uiState.value.selected
         reference = GeoPoint(longitude = longitude, latitude = latitude)
         _uiState.update {
-            it.copy(results = emptyList(), emergency = null)
+            it.copy(
+                results = emptyList(),
+                categoryError = false,
+                emergency = null,
+                emergencyError = false,
+            )
         }
         loadEmergency()
         selectedCategory?.let(::selectCategory)
@@ -138,7 +152,8 @@ class NearbyViewModel @Inject constructor(
      * reference, and publish them sorted nearest-first. A corrupt/missing index
      * surfaces as an empty list rather than a crash.
      */
-    @Suppress("TooGenericExceptionCaught") // search.db can throw various SQLite errors; fail-safe to empty
+    @Suppress("TooGenericExceptionCaught", "LongMethod")
+    // search.db can throw various SQLite errors; the token/error lifecycle stays together.
     fun selectCategory(category: PoiCategory) {
         // Invalidate an older in-flight query even when this selection has to
         // wait for the repository to become ready.
@@ -149,12 +164,20 @@ class NearbyViewModel @Inject constructor(
                     selected = category,
                     results = emptyList(),
                     isLoading = false,
+                    categoryError = false,
                     searchUnavailable = true,
                 )
             }
             return
         }
-        _uiState.update { it.copy(selected = category, isLoading = true, searchUnavailable = false) }
+        _uiState.update {
+            it.copy(
+                selected = category,
+                isLoading = true,
+                categoryError = false,
+                searchUnavailable = false,
+            )
+        }
         viewModelScope.launch {
             try {
                 val mapped = withContext(workDispatcher) {
@@ -179,7 +202,7 @@ class NearbyViewModel @Inject constructor(
                 // Ignore a result that a newer selection (or a reference move)
                 // has already superseded.
                 if (token == selectionToken) {
-                    _uiState.update { it.copy(results = mapped) }
+                    _uiState.update { it.copy(results = mapped, categoryError = false) }
                 }
             } catch (e: CancellationException) {
                 throw e
@@ -188,7 +211,7 @@ class NearbyViewModel @Inject constructor(
                 Log.w(TAG, "Nearby category query failed", e)
                 if (token == selectionToken) {
                     _uiState.update {
-                        it.copy(results = emptyList(), searchUnavailable = true)
+                        it.copy(results = emptyList(), categoryError = true)
                     }
                 }
             } finally {
@@ -202,27 +225,57 @@ class NearbyViewModel @Inject constructor(
     /**
      * Load the single nearest hospital and the single nearest police station
      * relative to the current reference and publish them as [EmergencyInfo].
-     * Best-effort: failures simply leave the affected slot null.
+     * Each lookup reports failure independently so one useful result can remain
+     * visible, with an explicit retry for the failed half.
      */
-    @Suppress("TooGenericExceptionCaught") // best-effort emergency lookup; never crash the screen
     fun loadEmergency() {
         val token = ++emergencyToken
         val referenceAtStart = reference
-        viewModelScope.launch {
-            val info = try {
-                val hospital = nearestSingle(PoiCategory.HOSPITAL, referenceAtStart)
-                val police = nearestSingle(PoiCategory.POLICE, referenceAtStart)
-                EmergencyInfo(hospital = hospital, police = police)
-            } catch (e: CancellationException) {
-                throw e
-            } catch (e: Exception) {
-                Log.w(TAG, "Nearby emergency lookup failed", e)
-                EmergencyInfo(hospital = null, police = null)
+        if (!searchRepository.isReady) {
+            _uiState.update {
+                it.copy(
+                    emergency = null,
+                    isEmergencyLoading = false,
+                    emergencyError = false,
+                )
             }
+            return
+        }
+        _uiState.update {
+            it.copy(isEmergencyLoading = true, emergencyError = false)
+        }
+        viewModelScope.launch {
+            val hospital = nearestSingleOutcome(PoiCategory.HOSPITAL, referenceAtStart)
+            val police = nearestSingleOutcome(PoiCategory.POLICE, referenceAtStart)
             if (token == emergencyToken) {
-                _uiState.update { it.copy(emergency = info) }
+                _uiState.update {
+                    it.copy(
+                        emergency = EmergencyInfo(
+                            hospital = hospital.result,
+                            police = police.result,
+                        ),
+                        isEmergencyLoading = false,
+                        emergencyError = hospital.failed || police.failed,
+                    )
+                }
             }
         }
+    }
+
+    @Suppress("TooGenericExceptionCaught") // search.db may surface several SQLite failures
+    private suspend fun nearestSingleOutcome(
+        category: PoiCategory,
+        referencePoint: GeoPoint,
+    ): EmergencyLookupOutcome = try {
+        EmergencyLookupOutcome(
+            result = nearestSingle(category, referencePoint),
+            failed = false,
+        )
+    } catch (error: CancellationException) {
+        throw error
+    } catch (error: Exception) {
+        Log.w(TAG, "Nearby emergency $category lookup failed", error)
+        EmergencyLookupOutcome(result = null, failed = true)
     }
 
     /** Nearest single POI of [category] with its distance, or null. */
@@ -260,3 +313,8 @@ class NearbyViewModel @Inject constructor(
         private const val TAG = "NearbyViewModel"
     }
 }
+
+private data class EmergencyLookupOutcome(
+    val result: NearbyResult?,
+    val failed: Boolean,
+)

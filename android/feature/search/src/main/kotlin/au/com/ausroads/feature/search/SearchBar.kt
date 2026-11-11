@@ -3,6 +3,7 @@ package au.com.ausroads.feature.search
 import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.animation.fadeIn
 import androidx.compose.animation.fadeOut
+import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
@@ -24,7 +25,9 @@ import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedTextField
+import androidx.compose.material3.OutlinedTextFieldDefaults
 import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
@@ -35,6 +38,7 @@ import androidx.compose.ui.platform.LocalSoftwareKeyboardController
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.tooling.preview.Preview
+import au.com.ausroads.offline.search.SearchPresentation
 import au.com.ausroads.offline.search.SearchResult
 import java.util.Locale
 import kotlin.math.abs
@@ -43,6 +47,7 @@ import kotlin.math.abs
 fun SearchOverlay(
     viewModel: SearchViewModel,
     onResultSelected: (SearchResult) -> Unit,
+    onManageMapPack: (() -> Unit)? = null,
     modifier: Modifier = Modifier,
 ) {
     val query by viewModel.query.collectAsState()
@@ -52,6 +57,8 @@ fun SearchOverlay(
     val searchUnavailable by viewModel.searchUnavailable.collectAsState()
     val focusManager = LocalFocusManager.current
     val keyboardController = LocalSoftwareKeyboardController.current
+    val searchFieldShape = MaterialTheme.shapes.extraLarge
+    val searchFieldContainer = MaterialTheme.colorScheme.surface
 
     Column(modifier = modifier) {
         OutlinedTextField(
@@ -59,7 +66,8 @@ fun SearchOverlay(
             onValueChange = viewModel::onQueryChange,
             modifier = Modifier
                 .fillMaxWidth()
-                .padding(horizontal = 16.dp, vertical = 8.dp),
+                .padding(horizontal = 16.dp, vertical = 8.dp)
+                .background(searchFieldContainer, searchFieldShape),
             placeholder = { Text(stringResource(R.string.search_placeholder)) },
             leadingIcon = { Icon(Icons.Default.Search, contentDescription = stringResource(R.string.search_icon_desc)) },
             trailingIcon = {
@@ -70,6 +78,12 @@ fun SearchOverlay(
                 }
             },
             singleLine = true,
+            shape = searchFieldShape,
+            colors = OutlinedTextFieldDefaults.colors(
+                focusedContainerColor = searchFieldContainer,
+                unfocusedContainerColor = searchFieldContainer,
+                disabledContainerColor = searchFieldContainer,
+            ),
         )
 
         AnimatedVisibility(
@@ -90,9 +104,15 @@ fun SearchOverlay(
                     )
                     searchFailed -> SearchStatusRow(
                         text = stringResource(R.string.search_error),
+                        actionLabel = stringResource(R.string.search_retry),
+                        onAction = viewModel::onRetry,
                     )
                     searchUnavailable -> SearchStatusRow(
                         text = stringResource(R.string.search_unavailable),
+                        actionLabel = onManageMapPack?.let {
+                            stringResource(R.string.search_manage_map_pack)
+                        },
+                        onAction = onManageMapPack,
                     )
                     results.isEmpty() -> SearchStatusRow(
                         text = stringResource(R.string.search_no_results, query),
@@ -119,6 +139,8 @@ fun SearchOverlay(
 private fun SearchStatusRow(
     text: String,
     showSpinner: Boolean = false,
+    actionLabel: String? = null,
+    onAction: (() -> Unit)? = null,
 ) {
     Row(
         modifier = Modifier
@@ -137,7 +159,14 @@ private fun SearchStatusRow(
             text = text,
             style = MaterialTheme.typography.bodyMedium,
             color = MaterialTheme.colorScheme.onSurfaceVariant,
+            modifier = Modifier.weight(1f),
         )
+        if (actionLabel != null && onAction != null) {
+            Spacer(modifier = Modifier.width(8.dp))
+            TextButton(onClick = onAction) {
+                Text(actionLabel)
+            }
+        }
     }
 }
 
@@ -179,7 +208,7 @@ private fun SearchResultsList(
         sortedGroups.forEach { (kind, groupResults) ->
             item(key = "header-$kind") {
                 Text(
-                    text = kind.replaceFirstChar { it.uppercase() },
+                    text = SearchPresentation.groupLabel(kind),
                     style = MaterialTheme.typography.labelMedium,
                     color = MaterialTheme.colorScheme.primary,
                     modifier = Modifier.padding(horizontal = 12.dp, vertical = 4.dp),
@@ -204,11 +233,10 @@ private fun SearchResultsList(
 internal val KIND_ORDER = listOf("suburb", "road", "poi", "water", "park")
 
 internal fun searchResultSubtitle(result: SearchResult): String = buildString {
-    append(result.kind.replaceFirstChar { it.uppercase() })
-    if (!result.className.isNullOrBlank()) {
-        append(" \u00b7 ")
-        append(result.className)
-    }
+    append(
+        SearchPresentation.classLabel(result.className)
+            ?: SearchPresentation.kindLabel(result.kind),
+    )
     append(" \u00b7 ")
     append(formatCoordinate(result.latitude, positive = "N", negative = "S"))
     append(", ")

@@ -6,6 +6,7 @@ import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
 import au.com.ausroads.routing.engine.RouteResult
 import org.maplibre.android.maps.MapLibreMap
+import org.maplibre.android.maps.Style
 import org.maplibre.android.style.layers.LineLayer
 import org.maplibre.android.style.layers.PropertyFactory
 import org.maplibre.android.style.sources.GeoJsonSource
@@ -28,8 +29,7 @@ fun RouteMapOverlay(
         val result = routeResult
 
         if (result == null) {
-            style.getLayer(ROUTE_LAYER_ID)?.let { style.removeLayer(it) }
-            style.getSource(ROUTE_SOURCE_ID)?.let { style.removeSource(it) }
+            removeRouteOverlay(style)
             return@LaunchedEffect
         }
 
@@ -58,11 +58,18 @@ fun RouteMapOverlay(
     }
 
     DisposableEffect(mapLibreMap) {
+        val ownedStyleGeneration = mapLibreMap.style
         onDispose {
-            mapLibreMap.style?.let { style ->
-                style.getLayer(ROUTE_LAYER_ID)?.let { style.removeLayer(it) }
-                style.getSource(ROUTE_SOURCE_ID)?.let { style.removeSource(it) }
+            // A style replacement on the same MapLibreMap destroys the old
+            // generation. Never let its retiring owner delete a newer route.
+            if (mapLibreMap.style === ownedStyleGeneration) {
+                ownedStyleGeneration?.let(::removeRouteOverlay)
             }
         }
     }
+}
+
+private fun removeRouteOverlay(style: Style) {
+    style.getLayer(ROUTE_LAYER_ID)?.let(style::removeLayer)
+    style.getSource(ROUTE_SOURCE_ID)?.let(style::removeSource)
 }

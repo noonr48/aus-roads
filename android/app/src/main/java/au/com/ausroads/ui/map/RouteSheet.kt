@@ -5,27 +5,36 @@ import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.selection.toggleable
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Add
 import androidx.compose.material3.Button
+import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.ModalBottomSheet
 import androidx.compose.material3.OutlinedTextField
+import androidx.compose.material3.SheetValue
 import androidx.compose.material3.Switch
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.material3.rememberModalBottomSheetState
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberUpdatedState
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.focus.onFocusChanged
 import androidx.compose.ui.res.stringResource
+import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.tooling.preview.Preview
 import au.com.ausroads.R
@@ -33,12 +42,19 @@ import au.com.ausroads.routing.engine.Maneuver
 import au.com.ausroads.routing.engine.RouteOptions
 import au.com.ausroads.routing.engine.RouteResult
 
+data class RouteOptionsWriteRecovery(
+    val isRetrying: Boolean,
+    val onRetry: () -> Unit,
+    val onDismiss: () -> Unit,
+)
+
 @OptIn(ExperimentalMaterial3Api::class)
 @Suppress("LongParameterList") // Compose screen entry point; params mirror MapScreenContent's pattern
 @Composable
 fun RouteSheet(
     result: RouteResult,
     onDismiss: () -> Unit,
+    onNavigationStarted: () -> Unit,
     onAddWaypoint: ((String) -> Unit)? = null,
     navigationViewModel: au.com.ausroads.feature.navigation.NavigationViewModel? = null,
     preciseLocationGranted: Boolean = false,
@@ -46,24 +62,84 @@ fun RouteSheet(
     onRequestPreciseLocation: () -> Unit = {},
     avoidOptions: RouteOptions = RouteOptions(),
     onAvoidOptionsChange: (RouteOptions) -> Unit = {},
+    optionsWriteRecovery: RouteOptionsWriteRecovery? = null,
     modifier: Modifier = Modifier,
 ) {
-    val sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true)
+    var waypointText by remember(result) { mutableStateOf("") }
+    var showDiscardConfirmation by remember { mutableStateOf(false) }
+    val currentHasWaypointDraft by rememberUpdatedState(waypointText.isNotBlank())
+    val sheetState = rememberModalBottomSheetState(
+        skipPartiallyExpanded = true,
+        confirmValueChange = { target ->
+            if (target == SheetValue.Hidden && currentHasWaypointDraft) {
+                showDiscardConfirmation = true
+                false
+            } else {
+                true
+            }
+        },
+    )
+    val requestDismiss: () -> Unit = {
+        if (waypointText.isNotBlank()) {
+            showDiscardConfirmation = true
+        } else {
+            onDismiss()
+        }
+    }
+    val keepEditing: () -> Unit = {
+        showDiscardConfirmation = false
+    }
+    LaunchedEffect(showDiscardConfirmation) {
+        if (!showDiscardConfirmation) {
+            sheetState.show()
+        }
+    }
     ModalBottomSheet(
-        onDismissRequest = onDismiss,
+        onDismissRequest = requestDismiss,
         sheetState = sheetState,
         modifier = modifier,
     ) {
         RouteContent(
             result = result,
-            onDismiss = onDismiss,
+            onDismiss = requestDismiss,
+            onNavigationStarted = onNavigationStarted,
             onAddWaypoint = onAddWaypoint,
+            waypointText = waypointText,
+            onWaypointTextChange = { waypointText = it },
             navigationViewModel = navigationViewModel,
             preciseLocationGranted = preciseLocationGranted,
             preciseLocationNeedsSettings = preciseLocationNeedsSettings,
             onRequestPreciseLocation = onRequestPreciseLocation,
             avoidOptions = avoidOptions,
             onAvoidOptionsChange = onAvoidOptionsChange,
+            optionsWriteRecovery = optionsWriteRecovery,
+        )
+    }
+
+    if (showDiscardConfirmation) {
+        AlertDialog(
+            onDismissRequest = keepEditing,
+            title = { Text(stringResource(R.string.route_waypoint_discard_title)) },
+            text = { Text(stringResource(R.string.route_waypoint_discard_message)) },
+            confirmButton = {
+                TextButton(
+                    onClick = {
+                        showDiscardConfirmation = false
+                        waypointText = ""
+                        onDismiss()
+                    },
+                ) {
+                    Text(
+                        text = stringResource(R.string.pin_discard),
+                        color = MaterialTheme.colorScheme.error,
+                    )
+                }
+            },
+            dismissButton = {
+                TextButton(onClick = keepEditing) {
+                    Text(stringResource(R.string.pin_keep_editing))
+                }
+            },
         )
     }
 }
@@ -73,18 +149,23 @@ fun RouteSheet(
 private fun RouteContent(
     result: RouteResult,
     onDismiss: () -> Unit,
+    onNavigationStarted: () -> Unit,
     onAddWaypoint: ((String) -> Unit)? = null,
+    waypointText: String = "",
+    onWaypointTextChange: (String) -> Unit = {},
     navigationViewModel: au.com.ausroads.feature.navigation.NavigationViewModel? = null,
     preciseLocationGranted: Boolean = false,
     preciseLocationNeedsSettings: Boolean = false,
     onRequestPreciseLocation: () -> Unit = {},
     avoidOptions: RouteOptions = RouteOptions(),
     onAvoidOptionsChange: (RouteOptions) -> Unit = {},
+    optionsWriteRecovery: RouteOptionsWriteRecovery? = null,
     modifier: Modifier = Modifier,
 ) {
     Column(
         modifier = modifier
             .fillMaxWidth()
+            .verticalScroll(rememberScrollState())
             .padding(horizontal = 20.dp, vertical = 12.dp),
         verticalArrangement = Arrangement.spacedBy(8.dp),
     ) {
@@ -100,9 +181,14 @@ private fun RouteContent(
             options = avoidOptions,
             onChange = onAvoidOptionsChange,
         )
+        optionsWriteRecovery?.let { RouteOptionsWriteFailure(it) }
 
         if (onAddWaypoint != null) {
-            WaypointInput(onAddWaypoint = onAddWaypoint)
+            WaypointInput(
+                waypointText = waypointText,
+                onWaypointTextChange = onWaypointTextChange,
+                onAddWaypoint = onAddWaypoint,
+            )
         }
 
         if (result.maneuvers.isNotEmpty()) {
@@ -136,7 +222,7 @@ private fun RouteContent(
             Button(
                 onClick = {
                     if (preciseLocationGranted) {
-                        if (navigationViewModel.startNavigation(result)) onDismiss()
+                        if (navigationViewModel.startNavigation(result)) onNavigationStarted()
                     } else {
                         onRequestPreciseLocation()
                     }
@@ -161,6 +247,38 @@ private fun RouteContent(
 
         TextButton(onClick = onDismiss) {
             Text(stringResource(R.string.route_close))
+        }
+    }
+}
+
+@Composable
+private fun RouteOptionsWriteFailure(
+    recovery: RouteOptionsWriteRecovery,
+    modifier: Modifier = Modifier,
+) {
+    Column(modifier = modifier.fillMaxWidth()) {
+        Text(
+            text = stringResource(
+                R.string.settings_save_failed,
+                stringResource(R.string.settings_route_preferences),
+            ),
+            style = MaterialTheme.typography.bodySmall,
+            color = MaterialTheme.colorScheme.error,
+        )
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            horizontalArrangement = Arrangement.End,
+        ) {
+            TextButton(onClick = recovery.onDismiss) {
+                Text(stringResource(R.string.action_dismiss))
+            }
+            TextButton(onClick = recovery.onRetry, enabled = !recovery.isRetrying) {
+                Text(
+                    stringResource(
+                        if (recovery.isRetrying) R.string.settings_retrying else R.string.action_retry,
+                    ),
+                )
+            }
         }
     }
 }
@@ -205,7 +323,13 @@ private fun AvoidToggleRow(
     modifier: Modifier = Modifier,
 ) {
     Row(
-        modifier = modifier.fillMaxWidth(),
+        modifier = modifier
+            .fillMaxWidth()
+            .toggleable(
+                value = checked,
+                role = Role.Switch,
+                onValueChange = onCheckedChange,
+            ),
         verticalAlignment = Alignment.CenterVertically,
         horizontalArrangement = Arrangement.SpaceBetween,
     ) {
@@ -216,17 +340,21 @@ private fun AvoidToggleRow(
         )
         Switch(
             checked = checked,
-            onCheckedChange = onCheckedChange,
+            onCheckedChange = null,
         )
     }
 }
 
 @Composable
 private fun WaypointInput(
+    waypointText: String,
+    onWaypointTextChange: (String) -> Unit,
     onAddWaypoint: (String) -> Unit,
     modifier: Modifier = Modifier,
 ) {
-    var waypointText by remember { mutableStateOf("") }
+    var waypointFocused by remember { mutableStateOf(false) }
+    var waypointBlurred by remember { mutableStateOf(false) }
+    val showWaypointError = waypointBlurred && waypointText.isBlank()
 
     Row(
         modifier = modifier.fillMaxWidth(),
@@ -235,18 +363,28 @@ private fun WaypointInput(
     ) {
         OutlinedTextField(
             value = waypointText,
-            onValueChange = { waypointText = it },
+            onValueChange = onWaypointTextChange,
             label = { Text(stringResource(R.string.route_waypoint_hint)) },
-            modifier = Modifier.weight(1f),
+            isError = showWaypointError,
+            supportingText = if (showWaypointError) {
+                { Text(stringResource(R.string.route_waypoint_required)) }
+            } else null,
+            modifier = Modifier
+                .weight(1f)
+                .onFocusChanged { focusState ->
+                    if (waypointFocused && !focusState.isFocused) waypointBlurred = true
+                    waypointFocused = focusState.isFocused
+                },
             singleLine = true,
         )
         IconButton(
             onClick = {
                 if (waypointText.isNotBlank()) {
                     onAddWaypoint(waypointText.trim())
-                    waypointText = ""
+                    onWaypointTextChange("")
                 }
             },
+            enabled = waypointText.isNotBlank(),
         ) {
             Icon(
                 imageVector = Icons.Filled.Add,
@@ -285,6 +423,7 @@ private fun RouteSheetPreview() {
                 ),
             ),
             onDismiss = {},
+            onNavigationStarted = {},
             navigationViewModel = null,
         )
     }

@@ -91,6 +91,7 @@ class SaOutbackProvider @Inject constructor() : LiveTrafficProvider {
                 cacheMaxAge = 15.minutes,
                 etag = response.headers[HttpHeaders.ETag],
                 lastModified = null,
+                notModified = true,
             )
         }
 

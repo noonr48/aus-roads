@@ -16,14 +16,16 @@ cp android/signing.properties.example android/signing.properties
 
 4. Build signed release:
 ```bash
-cd android && ./gradlew assembleWithNetworkRelease
+cd android
+./gradlew assembleWithNetworkRelease   # signed APK
+./gradlew bundleWithNetworkRelease     # signed Play Store AAB
 ```
 
 ## Play Store upload
 
 1. Create a Google Play Developer account ($25 one-time fee)
 2. Create a new app in the Play Console
-3. Upload the `app-withNetwork-release.apk` from `app/build/outputs/apk/withNetwork/release/`
+3. Upload the AAB from `app/build/outputs/bundle/withNetworkRelease/`
 4. Fill in the store listing (see play-store-listing.md)
 5. Complete the content rating questionnaire
 6. Set up pricing (Free)

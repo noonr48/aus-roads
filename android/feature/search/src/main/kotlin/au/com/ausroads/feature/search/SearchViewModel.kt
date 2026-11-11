@@ -43,6 +43,8 @@ class SearchViewModel @Inject constructor(
     private val _isActive = MutableStateFlow(false)
     val isActive: StateFlow<Boolean> = _isActive.asStateFlow()
 
+    private val retryGeneration = MutableStateFlow(0L)
+
     init {
         viewModelScope.launch {
             _query
@@ -51,6 +53,7 @@ class SearchViewModel @Inject constructor(
                 .combine(searchRepository.readiness.distinctUntilChanged()) { query, ready ->
                     query to ready
                 }
+                .combine(retryGeneration) { request, _ -> request }
                 .catch {
                     _isSearching.update { false }
                     _results.update { emptyList() }
@@ -122,6 +125,15 @@ class SearchViewModel @Inject constructor(
         _isSearching.update { false }
         _searchFailed.update { false }
         _searchUnavailable.update { false }
+    }
+
+    fun onRetry() {
+        if (_query.value.isBlank()) return
+        _results.update { emptyList() }
+        _isSearching.update { true }
+        _searchFailed.update { false }
+        _searchUnavailable.update { false }
+        retryGeneration.update { it + 1L }
     }
 
     /**

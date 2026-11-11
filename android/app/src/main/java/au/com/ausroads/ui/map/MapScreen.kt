@@ -20,6 +20,8 @@ package au.com.ausroads.ui.map
 
 import android.content.ComponentCallbacks2
 import android.content.Context
+import android.graphics.PointF
+import android.view.KeyEvent
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
@@ -35,11 +37,14 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.foundation.selection.selectable
+import androidx.compose.foundation.selection.selectableGroup
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.BookmarkBorder
 import androidx.compose.material.icons.filled.Delete
 import androidx.compose.material.icons.filled.LocationSearching
 import androidx.compose.material.icons.filled.MyLocation
+import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.ExperimentalMaterial3Api
@@ -53,6 +58,7 @@ import androidx.compose.material3.SnackbarDuration
 import androidx.compose.material3.SnackbarHost
 import androidx.compose.material3.SnackbarHostState
 import androidx.compose.material3.SnackbarResult
+import androidx.compose.material3.SheetValue
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
@@ -75,10 +81,15 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.hapticfeedback.HapticFeedbackType
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalHapticFeedback
+import androidx.compose.ui.platform.testTag
 import androidx.lifecycle.compose.LocalLifecycleOwner
 import androidx.compose.ui.res.stringResource
+import androidx.compose.ui.semantics.contentDescription
+import androidx.compose.ui.semantics.Role
+import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
+import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.compose.ui.viewinterop.AndroidView
@@ -91,15 +102,18 @@ import au.com.ausroads.core.model.GeoPoint
 import au.com.ausroads.data.pins.Pin
 import au.com.ausroads.io.isExpectedSqliteDatabase
 import au.com.ausroads.offline.search.SearchResult
+import au.com.ausroads.offline.search.SearchPresentation
 import au.com.ausroads.offline.download.state.InstalledPack
 import au.com.ausroads.offline.download.state.installDirectoryName
 import au.com.ausroads.routing.engine.RouteOptions
 import au.com.ausroads.traffic.provider.LiveTrafficEvent
+import au.com.ausroads.ui.pins.PIN_COLOR_CHOICES
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 import org.maplibre.android.MapLibre
+import org.maplibre.android.camera.CameraUpdateFactory
 import org.maplibre.android.camera.CameraPosition
 import org.maplibre.android.geometry.LatLng
 import org.maplibre.android.maps.MapLibreMap
@@ -118,6 +132,8 @@ private val AdelaideCbd = LatLng(-34.92, 138.62)
 // The bundled vector data first contains POIs at z14, so the demo opens at a
 // useful neighbourhood scale instead of a city-wide view with no visible shops.
 private const val ADELAIDE_ZOOM = 14.0
+private const val MAP_KEYBOARD_PAN_PX = 120f
+private const val MAP_KEYBOARD_ANIMATION_MS = 180
 // Allow zooming in past the tile maxzoom (overzoom) so POI labels (style minzoom
 // 14) are tappable across a usable street-level range, not just a 14.0-14.5 sliver.
 private const val MAX_ZOOM = 16.0
@@ -200,7 +216,7 @@ fun MapScreen(
     pins: List<Pin> = emptyList(),
     onSavePin: (Double, Double, String, String, (Pin) -> Unit, (Throwable) -> Unit) -> Unit =
         { _, _, _, _, _, _ -> },
-    onDeletePin: (Pin) -> Unit = {},
+    onDeletePin: (Pin, () -> Unit, (Throwable) -> Unit) -> Unit = { _, _, _ -> },
     reverseGeocode: suspend (Double, Double) -> String? = { _, _ -> null },
     showAttribution: Boolean = true,
     searchViewModel: au.com.ausroads.feature.search.SearchViewModel? = null,
@@ -211,6 +227,7 @@ fun MapScreen(
     routeViewModel: RouteViewModel? = null,
     routeAvoidOptions: RouteOptions = RouteOptions(),
     onRouteAvoidOptionsChange: (RouteOptions) -> Unit = {},
+    routeOptionsWriteRecovery: RouteOptionsWriteRecovery? = null,
     activePack: InstalledPack? = null,
     packStateInitialized: Boolean = false,
     requestedMapTarget: SearchResult? = null,
@@ -263,6 +280,7 @@ fun MapScreen(
             routeViewModel = routeViewModel,
             routeAvoidOptions = routeAvoidOptions,
             onRouteAvoidOptionsChange = onRouteAvoidOptionsChange,
+            routeOptionsWriteRecovery = routeOptionsWriteRecovery,
             requestedMapTarget = requestedMapTarget,
             onRequestedMapTargetConsumed = onRequestedMapTargetConsumed,
             installedPack = renderInstalledPack,
@@ -304,7 +322,7 @@ private fun MapScreenContent(
     onOpenSettings: () -> Unit,
     pins: List<Pin>,
     onSavePin: (Double, Double, String, String, (Pin) -> Unit, (Throwable) -> Unit) -> Unit,
-    onDeletePin: (Pin) -> Unit,
+    onDeletePin: (Pin, () -> Unit, (Throwable) -> Unit) -> Unit,
     reverseGeocode: suspend (Double, Double) -> String?,
     showAttribution: Boolean,
     searchViewModel: au.com.ausroads.feature.search.SearchViewModel?,
@@ -315,6 +333,7 @@ private fun MapScreenContent(
     routeViewModel: RouteViewModel?,
     routeAvoidOptions: RouteOptions,
     onRouteAvoidOptionsChange: (RouteOptions) -> Unit,
+    routeOptionsWriteRecovery: RouteOptionsWriteRecovery?,
     requestedMapTarget: SearchResult?,
     onRequestedMapTargetConsumed: () -> Unit,
     installedPack: InstalledPack?,
@@ -328,10 +347,27 @@ private fun MapScreenContent(
     val snackbarHostState = remember { SnackbarHostState() }
     val recenterRequestOwner = remember { RecenterRequestOwner() }
 
-    // Start traffic polling when enabled
-    LaunchedEffect(trafficEnabled) {
-        if (trafficEnabled && trafficViewModel != null) {
-            trafficViewModel.startPolling()
+    // Live traffic is foreground-only: opt-out and leaving the map both stop network work.
+    DisposableEffect(lifecycleOwner, trafficEnabled, trafficViewModel) {
+        val observer = LifecycleEventObserver { _, event ->
+            when (event) {
+                Lifecycle.Event.ON_START -> if (trafficEnabled) trafficViewModel?.startPolling()
+                Lifecycle.Event.ON_STOP,
+                Lifecycle.Event.ON_DESTROY,
+                -> trafficViewModel?.stopPolling()
+                else -> Unit
+            }
+        }
+        lifecycleOwner.lifecycle.addObserver(observer)
+        if (trafficEnabled && lifecycleOwner.lifecycle.currentState.isAtLeast(Lifecycle.State.STARTED)) {
+            trafficViewModel?.startPolling()
+        } else {
+            trafficViewModel?.stopPolling()
+        }
+
+        onDispose {
+            lifecycleOwner.lifecycle.removeObserver(observer)
+            trafficViewModel?.stopPolling()
         }
     }
 
@@ -355,9 +391,19 @@ private fun MapScreenContent(
     var recenterWhenPermissionGranted by remember { mutableStateOf(false) }
     var didInitialLocationFocus by remember { mutableStateOf(requestedMapTarget != null) }
     var hasUsedLongPress by remember { mutableStateOf(false) }
+    var mapHasKeyboardFocus by remember { mutableStateOf(false) }
 
     // Location permission + live fix (drives the blue dot and the My Location FAB).
-    val locationPermission = rememberForegroundLocationPermissionState(context)
+    val locationPermission = rememberForegroundLocationPermissionState(
+        context = context,
+        onDenied = {
+            scope.launch {
+                snackbarHostState.showSnackbar(
+                    context.getString(R.string.map_location_permission_denied),
+                )
+            }
+        },
+    )
     val userLocation = rememberUserLocation(locationPermission.isGranted)
 
     val recenter: () -> Unit = {
@@ -370,6 +416,16 @@ private fun MapScreenContent(
                 snackbarHostState = snackbarHostState,
                 locatingMessage = context.getString(R.string.map_locating),
                 unavailableMessage = context.getString(R.string.map_location_unavailable),
+                outsideCoverageMessage = context.getString(R.string.map_location_outside_coverage),
+                manageMapPackLabel = context.getString(R.string.map_manage_pack),
+                onManageMapPack = onOpenSettings,
+                isInsideMapCoverage = { latitude, longitude ->
+                    isInsideActiveMapCoverage(
+                        usingBundledFallback = usingBundledFallback,
+                        latitude = latitude,
+                        longitude = longitude,
+                    )
+                },
             )
         }
     }
@@ -402,16 +458,53 @@ private fun MapScreenContent(
     val currentHapticFeedback = rememberUpdatedState(hapticFeedback)
 
     val routeHistoryRoutes = routeHistoryViewModel?.recentRoutes?.collectAsState()?.value
+    val routeHistoryLoading = routeHistoryViewModel?.isLoading?.collectAsState()?.value ?: false
+    val routeHistoryLoadError = routeHistoryViewModel?.loadError?.collectAsState()?.value ?: false
+    val routeHistorySaveError = routeHistoryViewModel?.saveError?.collectAsState()?.value ?: false
 
     // Route computation state
     val routeState = routeViewModel?.routeState?.collectAsState()?.value
-    val activeRoute = (routeState as? RouteUiState.Active)?.result
+    val navigationSessionRoute = routeViewModel
+        ?.navigationSessionRoute
+        ?.collectAsState()
+        ?.value
+    val routeSurfaces = routeSurfaceState(routeState, navigationSessionRoute)
     val isRouting = routeState is RouteUiState.Loading
 
     // Surface routing failures instead of dropping Loading/Error on the floor.
     LaunchedEffect(routeState) {
         if (routeState is RouteUiState.Error) {
-            snackbarHostState.showSnackbar(routeState.message)
+            val actionLabel = context.getString(
+                when (routeState.recovery) {
+                    RouteRecovery.RETRY -> R.string.action_retry
+                    RouteRecovery.MANAGE_MAP_PACK -> R.string.map_manage_pack
+                },
+            )
+            if (
+                snackbarHostState.showSnackbar(routeState.message, actionLabel) ==
+                SnackbarResult.ActionPerformed
+            ) {
+                when (routeState.recovery) {
+                    RouteRecovery.RETRY -> routeViewModel?.retry()
+                    RouteRecovery.MANAGE_MAP_PACK -> onOpenSettings()
+                }
+            }
+        }
+    }
+
+    LaunchedEffect(routeHistorySaveError) {
+        val historyViewModel = routeHistoryViewModel ?: return@LaunchedEffect
+        if (routeHistorySaveError) {
+            val result = snackbarHostState.showSnackbar(
+                message = context.getString(R.string.route_history_save_failed),
+                actionLabel = context.getString(R.string.action_retry),
+                duration = SnackbarDuration.Indefinite,
+            )
+            if (result == SnackbarResult.ActionPerformed) {
+                historyViewModel.retrySave()
+            } else {
+                historyViewModel.dismissSaveError()
+            }
         }
     }
 
@@ -436,7 +529,14 @@ private fun MapScreenContent(
         )
         if (origin == null) {
             scope.launch {
-                snackbarHostState.showSnackbar(context.getString(R.string.map_route_origin_unavailable))
+                if (
+                    snackbarHostState.showSnackbar(
+                        message = context.getString(R.string.map_route_origin_unavailable),
+                        actionLabel = context.getString(R.string.map_my_location),
+                    ) == SnackbarResult.ActionPerformed
+                ) {
+                    onMyLocation()
+                }
             }
             return@startDirections
         }
@@ -518,6 +618,44 @@ private fun MapScreenContent(
             // Compose overlays and MapLibre stay in one composited hierarchy.
             .textureMode(true)
         MapView(context, options).also { mv ->
+            mv.contentDescription = context.getString(R.string.map_canvas_description)
+            mv.importantForAccessibility = android.view.View.IMPORTANT_FOR_ACCESSIBILITY_YES
+            mv.isFocusable = true
+            mv.isFocusableInTouchMode = true
+            mv.setOnFocusChangeListener { _, hasFocus ->
+                mapHasKeyboardFocus = hasFocus
+            }
+            mv.setOnKeyListener { _, keyCode, event ->
+                if (event.action != KeyEvent.ACTION_DOWN) return@setOnKeyListener false
+                val map = mapLibreMap ?: return@setOnKeyListener false
+                when (keyCode) {
+                    KeyEvent.KEYCODE_DPAD_UP -> keyboardPanUpdate(map, mv, 0f, -MAP_KEYBOARD_PAN_PX)
+                    KeyEvent.KEYCODE_DPAD_DOWN -> keyboardPanUpdate(map, mv, 0f, MAP_KEYBOARD_PAN_PX)
+                    KeyEvent.KEYCODE_DPAD_LEFT -> keyboardPanUpdate(map, mv, -MAP_KEYBOARD_PAN_PX, 0f)
+                    KeyEvent.KEYCODE_DPAD_RIGHT -> keyboardPanUpdate(map, mv, MAP_KEYBOARD_PAN_PX, 0f)
+                    KeyEvent.KEYCODE_PLUS,
+                    KeyEvent.KEYCODE_EQUALS,
+                    KeyEvent.KEYCODE_NUMPAD_ADD,
+                    -> CameraUpdateFactory.zoomIn()
+                    KeyEvent.KEYCODE_MINUS,
+                    KeyEvent.KEYCODE_NUMPAD_SUBTRACT,
+                    -> CameraUpdateFactory.zoomOut()
+                    KeyEvent.KEYCODE_DPAD_CENTER,
+                    KeyEvent.KEYCODE_ENTER,
+                    KeyEvent.KEYCODE_SPACE,
+                    -> {
+                        map.cameraPosition.target?.let { center ->
+                            hasUsedLongPress = true
+                            pendingDrop = LatLng(center.latitude, center.longitude)
+                        }
+                        return@setOnKeyListener true
+                    }
+                    else -> return@setOnKeyListener false
+                }.also { update ->
+                    map.animateCamera(update, MAP_KEYBOARD_ANIMATION_MS)
+                }
+                true
+            }
             android.util.Log.i("MapScreen", "MapView created with TextureView renderer")
             mv.onCreate(null)
             mv.addOnDidFailLoadingMapListener { error ->
@@ -526,10 +664,11 @@ private fun MapScreenContent(
             }
             mv.getMapAsync { map ->
                 android.util.Log.i("MapScreen", "MapLibre map ready; preparing offline style")
-                scope.launch {
-                    runCatching {
-                        withContext(Dispatchers.IO) { ensureMbtilesAndStyle(context, installedPack) }
-                    }.onSuccess { styleJson ->
+                scope.launch(Dispatchers.Main.immediate) {
+                    try {
+                        val styleJson = withContext(Dispatchers.IO) {
+                            ensureMbtilesAndStyle(context, installedPack)
+                        }
                         map.setStyle(Style.Builder().fromJson(styleJson)) {
                             configureMap(map)
                             // Publish only after style readiness: every gesture
@@ -542,7 +681,7 @@ private fun MapScreenContent(
                             mapLoadState = MapLoadState.Ready
                             android.util.Log.i("MapScreen", "Map style ready; map interactive")
                         }
-                    }.onFailure { error ->
+                    } catch (error: Exception) {
                         if (error is CancellationException) throw error
                         android.util.Log.e("MapScreen", "Preparing offline map failed", error)
                         mapLoadState = MapLoadState.Failed
@@ -554,10 +693,23 @@ private fun MapScreenContent(
 
     Box(modifier = modifier.fillMaxSize()) {
         AndroidView(
-            modifier = Modifier.fillMaxSize(),
+            modifier = Modifier
+                .fillMaxSize()
+                .testTag("map-canvas")
+                .semantics {
+                    contentDescription = context.getString(R.string.map_canvas_description)
+                },
             factory = { mapView },
             update = { /* lifecycle is forwarded via DisposableEffect below */ },
         )
+        if (mapHasKeyboardFocus) {
+            Box(
+                modifier = Modifier
+                    .fillMaxSize()
+                    .border(3.dp, MaterialTheme.colorScheme.primary)
+                    .zIndex(20f),
+            )
+        }
 
         // Saved pins + live user-location layers (manage MapLibre layers, no UI)
         PinsMapOverlay(pins = pins, mapLibreMap = mapLibreMap)
@@ -565,6 +717,10 @@ private fun MapScreenContent(
         UserLocationOverlay(
             latitude = userLocation.value?.latitude,
             longitude = userLocation.value?.longitude,
+            accuracyMeters = userLocation.value
+                ?.takeIf { it.hasAccuracy() }
+                ?.accuracy,
+            isPreciseLocationGranted = locationPermission.isPreciseGranted,
             mapLibreMap = mapLibreMap,
         )
 
@@ -589,9 +745,10 @@ private fun MapScreenContent(
             MyLocationFab(
                 onClick = onMyLocation,
                 isLocated = userLocation.value != null,
+                isLocating = locationPermission.isGranted && userLocation.value == null,
                 modifier = Modifier
                     .align(Alignment.BottomEnd)
-                    .padding(bottom = 56.dp, end = 16.dp),
+                    .padding(bottom = 72.dp, end = 16.dp),
             )
         }
 
@@ -599,7 +756,7 @@ private fun MapScreenContent(
             hostState = snackbarHostState,
             modifier = Modifier
                 .align(Alignment.BottomCenter)
-                .padding(bottom = 72.dp),
+                .padding(bottom = 136.dp),
         )
 
         // Search overlay (v0.1.2)
@@ -607,6 +764,7 @@ private fun MapScreenContent(
             au.com.ausroads.feature.search.SearchOverlay(
                 viewModel = searchViewModel,
                 onResultSelected = focusMapResult,
+                onManageMapPack = onOpenSettings,
                 modifier = Modifier
                     .align(Alignment.TopCenter)
                     .zIndex(10f),
@@ -619,11 +777,24 @@ private fun MapScreenContent(
                 onOpenSettings = onOpenSettings,
                 modifier = Modifier.align(Alignment.Center),
             )
+        } else if (selectedSearchResult != null) {
+            val result = selectedSearchResult ?: return@Box
+            SelectedResultBanner(
+                result = result,
+                onOpenDetails = {
+                    selectedFeature = result.toIdentifiedFeature(
+                        SearchPresentation.kindLabel(result.kind),
+                    )
+                },
+                modifier = Modifier
+                    .align(Alignment.BottomCenter)
+                    .padding(bottom = 88.dp),
+            )
         } else if (!hasUsedLongPress) {
             HoldToPinHint(
                 modifier = Modifier
                     .align(Alignment.BottomCenter)
-                    .padding(bottom = 16.dp),
+                    .padding(bottom = 88.dp),
             )
         }
 
@@ -631,9 +802,11 @@ private fun MapScreenContent(
         if (trafficEnabled && trafficViewModel != null) {
             au.com.ausroads.feature.traffic.TrafficStatusPill(
                 viewModel = trafficViewModel,
+                onOpenTrafficSettings = onOpenSettings,
                 modifier = Modifier
                     .align(Alignment.TopEnd)
-                    .padding(top = 8.dp, end = 16.dp),
+                    .padding(top = 136.dp, end = 16.dp)
+                    .zIndex(9f),
             )
         }
 
@@ -642,18 +815,17 @@ private fun MapScreenContent(
             TrafficMapOverlay(events = trafficEvents, mapLibreMap = mapLibreMap)
         }
 
-        // Route line on map
-        if (activeRoute != null) {
-            RouteMapOverlay(routeResult = activeRoute, mapLibreMap = mapLibreMap)
-        }
+        // Keep the overlay owner composed so clearing the route explicitly removes
+        // its native source/layer from the current style generation.
+        RouteMapOverlay(routeResult = routeSurfaces.mapRoute, mapLibreMap = mapLibreMap)
 
         // Navigation overlay (v0.7)
         if (navigationViewModel != null) {
             au.com.ausroads.feature.navigation.NavigationOverlay(
                 viewModel = navigationViewModel,
                 onStopNavigation = {
-                    // Save completed route to history when navigation ends
-                    val route = activeRoute
+                    // Save the exact route that started this navigation session.
+                    val route = routeViewModel?.navigationSessionRoute?.value
                     if (route != null && routeHistoryViewModel != null && route.geometry.isNotEmpty()) {
                         val origin = route.geometry.first()
                         val dest = route.geometry.last()
@@ -666,7 +838,7 @@ private fun MapScreenContent(
                             durationSeconds = route.durationSeconds,
                         )
                     }
-                    routeViewModel?.clearRoute()
+                    routeViewModel?.endNavigationSession()
                 },
                 modifier = Modifier.align(Alignment.BottomCenter),
             )
@@ -674,17 +846,19 @@ private fun MapScreenContent(
 
         // Route result sheet
         if (routeViewModel != null) {
-            val route = (routeState as? RouteUiState.Active)?.result
+            val route = routeSurfaces.sheetRoute
             if (route != null) {
                 RouteSheet(
                     result = route,
                     onDismiss = { routeViewModel.clearRoute() },
+                    onNavigationStarted = { routeViewModel.beginNavigationSession(route) },
                     navigationViewModel = navigationViewModel,
                     preciseLocationGranted = locationPermission.isPreciseGranted,
                     preciseLocationNeedsSettings = locationPermission.preciseNeedsSettings,
                     onRequestPreciseLocation = locationPermission.request,
                     avoidOptions = routeAvoidOptions,
                     onAvoidOptionsChange = onRouteAvoidOptionsChange,
+                    optionsWriteRecovery = routeOptionsWriteRecovery,
                 )
             }
         }
@@ -704,17 +878,34 @@ private fun MapScreenContent(
         // Route history sheet
         if (showRouteHistory && routeHistoryViewModel != null && routeHistoryRoutes != null) {
             RouteHistorySheet(
-                routes = routeHistoryRoutes,
-                onRouteSelected = { entity ->
-                    if (routeViewModel != null) {
-                        routeViewModel.clearRoute()
-                        routeViewModel.setOrigin(GeoPoint(longitude = entity.originLon, latitude = entity.originLat))
-                        routeViewModel.setDestination(GeoPoint(longitude = entity.destLon, latitude = entity.destLat))
-                    }
-                    showRouteHistory = false
-                },
-                onDismiss = { showRouteHistory = false },
-                onDelete = { entity -> routeHistoryViewModel.deleteRoute(entity) },
+                state = RouteHistorySheetState(
+                    routes = routeHistoryRoutes,
+                    isLoading = routeHistoryLoading,
+                    hasLoadError = routeHistoryLoadError,
+                ),
+                actions = RouteHistorySheetActions(
+                    onRetryLoad = routeHistoryViewModel::retryLoad,
+                    onRouteSelected = { entity ->
+                        if (routeViewModel != null) {
+                            routeViewModel.clearRoute()
+                            routeViewModel.setOrigin(
+                                GeoPoint(longitude = entity.originLon, latitude = entity.originLat),
+                            )
+                            routeViewModel.setDestination(
+                                GeoPoint(longitude = entity.destLon, latitude = entity.destLat),
+                            )
+                        }
+                        showRouteHistory = false
+                    },
+                    onDismiss = { showRouteHistory = false },
+                    onDelete = { entity, onDeleted, onError ->
+                        routeHistoryViewModel.deleteRoute(
+                            route = entity,
+                            onDeleted = onDeleted,
+                            onError = onError,
+                        )
+                    },
+                ),
             )
         }
 
@@ -797,7 +988,27 @@ private fun MapScreenContent(
                                     actionLabel = context.getString(R.string.action_undo),
                                     duration = SnackbarDuration.Short,
                                 )
-                                if (result == SnackbarResult.ActionPerformed) onDeletePin(saved)
+                                if (result == SnackbarResult.ActionPerformed) {
+                                    onDeletePin(
+                                        saved,
+                                        {},
+                                        { error ->
+                                            android.util.Log.e(
+                                                "MapScreen",
+                                                "Undo saved-pin creation failed",
+                                                error,
+                                            )
+                                            scope.launch {
+                                                snackbarHostState.showSnackbar(
+                                                    context.getString(
+                                                        R.string.pin_delete_failed,
+                                                        saved.name,
+                                                    ),
+                                                )
+                                            }
+                                        },
+                                    )
+                                }
                             }
                         },
                         { error ->
@@ -823,14 +1034,20 @@ private fun MapScreenContent(
                     startDirectionsTo(pin.lat, pin.lon)
                     selectedPin = null
                 },
-                onDelete = {
-                    onDeletePin(pin)
-                    selectedPin = null
-                    scope.launch {
-                        snackbarHostState.showSnackbar(
-                            context.getString(R.string.map_pin_deleted, pin.name),
-                        )
-                    }
+                onDelete = { onDeleted, onError ->
+                    onDeletePin(
+                        pin,
+                        {
+                            onDeleted()
+                            selectedPin = null
+                            scope.launch {
+                                snackbarHostState.showSnackbar(
+                                    context.getString(R.string.map_pin_deleted, pin.name),
+                                )
+                            }
+                        },
+                        onError,
+                    )
                 },
             )
         }
@@ -981,6 +1198,20 @@ private fun configureMap(map: MapLibreMap) {
         .build()
 }
 
+private fun keyboardPanUpdate(
+    map: MapLibreMap,
+    mapView: MapView,
+    xOffsetPx: Float,
+    yOffsetPx: Float,
+) = CameraUpdateFactory.newLatLng(
+    map.projection.fromScreenLocation(
+        PointF(
+            mapView.width / 2f + xOffsetPx,
+            mapView.height / 2f + yOffsetPx,
+        ),
+    ),
+)
+
 internal fun isInsideActiveMapCoverage(
     usingBundledFallback: Boolean,
     latitude: Double,
@@ -1089,7 +1320,7 @@ private fun FeatureSheetBody(
 ) {
     Column(
         modifier = Modifier
-            .fillMaxSize()
+            .fillMaxWidth()
             .padding(horizontal = 24.dp, vertical = 16.dp),
         verticalArrangement = Arrangement.spacedBy(6.dp),
     ) {
@@ -1103,15 +1334,9 @@ private fun FeatureSheetBody(
             style = MaterialTheme.typography.labelMedium,
             color = MaterialTheme.colorScheme.onSurfaceVariant,
         )
-        if (!feature.featureClass.isNullOrBlank()) {
+        SearchPresentation.classLabel(feature.featureClass)?.let { category ->
             Text(
-                text = "${feature.sourceLayer} · class=${feature.featureClass}",
-                style = MaterialTheme.typography.bodySmall,
-                color = MaterialTheme.colorScheme.onSurfaceVariant,
-            )
-        } else {
-            Text(
-                text = feature.sourceLayer,
+                text = category,
                 style = MaterialTheme.typography.bodySmall,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
             )
@@ -1127,12 +1352,12 @@ private fun FeatureSheetBody(
                         contentDescription = null,
                         modifier = Modifier.padding(end = 4.dp),
                     )
-                    Text(stringResource(R.string.action_save))
+                    Text(stringResource(R.string.action_save_pin))
                 }
             }
             if (onNavigate != null && feature.latitude != 0.0) {
                 Button(onClick = { onNavigate(feature.latitude, feature.longitude) }) {
-                    Text(stringResource(R.string.route_start_navigation))
+                    Text(stringResource(R.string.route_directions))
                 }
             }
         }
@@ -1157,6 +1382,34 @@ private fun DemoCoverageBanner(modifier: Modifier = Modifier) {
             color = Color.White,
             fontSize = 12.sp,
             fontWeight = FontWeight.Medium,
+        )
+    }
+}
+
+@Composable
+private fun SelectedResultBanner(
+    result: SearchResult,
+    onOpenDetails: () -> Unit,
+    modifier: Modifier = Modifier,
+) {
+    val category = SearchPresentation.classLabel(result.className)
+        ?: SearchPresentation.kindLabel(result.kind)
+    Surface(
+        modifier = modifier.clickable(
+            onClickLabel = stringResource(R.string.map_open_place_details, result.name),
+            onClick = onOpenDetails,
+        ),
+        shape = RoundedCornerShape(20.dp),
+        color = MaterialTheme.colorScheme.surface,
+        tonalElevation = 3.dp,
+        shadowElevation = 3.dp,
+    ) {
+        Text(
+            text = "${result.name} · $category",
+            modifier = Modifier.padding(horizontal = 16.dp, vertical = 10.dp),
+            style = MaterialTheme.typography.labelLarge,
+            maxLines = 1,
+            overflow = TextOverflow.Ellipsis,
         )
     }
 }
@@ -1213,20 +1466,33 @@ private fun NoMapPackPlaceholder(
 private fun MyLocationFab(
     onClick: () -> Unit,
     isLocated: Boolean,
+    isLocating: Boolean,
     modifier: Modifier = Modifier,
 ) {
+    val myLocationDescription = stringResource(R.string.map_my_location)
+    val locatingDescription = stringResource(R.string.map_locating)
     FloatingActionButton(
         onClick = onClick,
         modifier = modifier,
         containerColor = MaterialTheme.colorScheme.surface,
         shape = CircleShape,
     ) {
-        Icon(
-            imageVector = if (isLocated) Icons.Filled.MyLocation else Icons.Filled.LocationSearching,
-            contentDescription = stringResource(R.string.map_my_location),
-            // The single "you" accent only when a live fix is shown.
-            tint = if (isLocated) UserAccentBlue else MaterialTheme.colorScheme.onSurface,
-        )
+        if (isLocating) {
+            CircularProgressIndicator(
+                modifier = Modifier
+                    .size(24.dp)
+                    .semantics { contentDescription = locatingDescription },
+                strokeWidth = 2.dp,
+                color = UserAccentBlue,
+            )
+        } else {
+            Icon(
+                imageVector = if (isLocated) Icons.Filled.MyLocation else Icons.Filled.LocationSearching,
+                contentDescription = myLocationDescription,
+                // The single "you" accent only when a live fix is shown.
+                tint = if (isLocated) UserAccentBlue else MaterialTheme.colorScheme.onSurface,
+            )
+        }
     }
 }
 
@@ -1241,18 +1507,6 @@ private val UserAccentBlue = Color(0xFF1E88E5)
 // Default colour for a newly-saved place (one dedicated "saved" green, kept
 // distinct from the traffic-severity hues and the "you" blue).
 const val PIN_SAVE_COLOR = "#1B5E20"
-
-// Pin colour choices — deliberately avoid the traffic-severity crayons
-// (#4CAF50/#FF9800/#F44336/#9C27B0) and the user-location blue so a pin is never
-// mistaken for a traffic marker or the position dot.
-private val PIN_PALETTE = listOf(
-    "#1B5E20", // green
-    "#00838F", // cyan
-    "#6D4C41", // brown
-    "#C2185B", // magenta
-    "#455A64", // slate
-    "#283593", // indigo
-)
 
 private val MicroLabelFont = androidx.compose.ui.text.font.FontFamily.Monospace
 
@@ -1276,13 +1530,41 @@ private fun DropPinSheet(
     ) -> Unit,
     onDirections: () -> Unit,
 ) {
-    val sheetState = rememberModalBottomSheetState()
     var name by remember { mutableStateOf("") }
     var selectedColor by remember { mutableStateOf(PIN_SAVE_COLOR) }
     var place by remember { mutableStateOf<String?>(null) }
     var resolved by remember { mutableStateOf(false) }
     var isSaving by remember { mutableStateOf(false) }
     var saveError by remember { mutableStateOf<String?>(null) }
+    var userEditedName by remember { mutableStateOf(false) }
+    var showDiscardConfirmation by remember { mutableStateOf(false) }
+    val hasUnsavedChanges = userEditedName || selectedColor != PIN_SAVE_COLOR
+    val currentIsSaving by rememberUpdatedState(isSaving)
+    val currentHasUnsavedChanges by rememberUpdatedState(hasUnsavedChanges)
+    val sheetState = rememberModalBottomSheetState(
+        confirmValueChange = { target ->
+            when {
+                target != SheetValue.Hidden -> true
+                currentIsSaving -> false
+                currentHasUnsavedChanges -> {
+                    showDiscardConfirmation = true
+                    false
+                }
+                else -> true
+            }
+        },
+    )
+    val requestDismiss: () -> Unit = {
+        if (!isSaving) {
+            if (hasUnsavedChanges) showDiscardConfirmation = true else onDismiss()
+        }
+    }
+
+    LaunchedEffect(showDiscardConfirmation) {
+        if (!showDiscardConfirmation) {
+            sheetState.show()
+        }
+    }
 
     LaunchedEffect(latitude, longitude) {
         val suggestion = try {
@@ -1298,7 +1580,7 @@ private fun DropPinSheet(
         resolved = true
     }
 
-    ModalBottomSheet(onDismissRequest = onDismiss, sheetState = sheetState) {
+    ModalBottomSheet(onDismissRequest = requestDismiss, sheetState = sheetState) {
         Column(
             modifier = Modifier
                 .fillMaxWidth()
@@ -1317,15 +1599,30 @@ private fun DropPinSheet(
             )
             OutlinedTextField(
                 value = name,
-                onValueChange = { name = it },
+                onValueChange = {
+                    name = it
+                    userEditedName = true
+                },
                 label = { Text(stringResource(R.string.pin_name_label)) },
                 singleLine = true,
+                enabled = !isSaving,
                 modifier = Modifier.fillMaxWidth(),
             )
+            val selectedColorName = PIN_COLOR_CHOICES
+                .first { choice -> choice.hex == selectedColor }
+                .nameRes
+            Text(
+                text = stringResource(
+                    R.string.pin_color_selected,
+                    stringResource(selectedColorName),
+                ),
+                style = MaterialTheme.typography.labelMedium,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
             ColorChoiceRow(
-                colors = PIN_PALETTE,
                 selectedColor = selectedColor,
                 onColorSelected = { selectedColor = it },
+                enabled = !isSaving,
             )
             saveError?.let { message ->
                 Text(
@@ -1338,7 +1635,7 @@ private fun DropPinSheet(
                 modifier = Modifier.fillMaxWidth(),
                 horizontalArrangement = Arrangement.spacedBy(8.dp, Alignment.End),
             ) {
-                OutlinedButton(onClick = onDirections) {
+                OutlinedButton(onClick = onDirections, enabled = !isSaving) {
                     Text(stringResource(R.string.route_directions))
                 }
                 Button(
@@ -1373,6 +1670,12 @@ private fun DropPinSheet(
             Spacer(modifier = Modifier.height(8.dp))
         }
     }
+    if (showDiscardConfirmation) {
+        DiscardPinChangesDialog(
+            onKeepEditing = { showDiscardConfirmation = false },
+            onDiscard = onDismiss,
+        )
+    }
 }
 
 /** Saved-pin detail sheet shown when a pin marker is tapped. */
@@ -1382,10 +1685,20 @@ private fun PinDetailSheet(
     pin: Pin,
     onDismiss: () -> Unit,
     onDirections: () -> Unit,
-    onDelete: () -> Unit,
+    onDelete: (onDeleted: () -> Unit, onError: (Throwable) -> Unit) -> Unit,
 ) {
-    val sheetState = rememberModalBottomSheetState()
-    ModalBottomSheet(onDismissRequest = onDismiss, sheetState = sheetState) {
+    var showDeleteConfirmation by remember(pin.id) { mutableStateOf(false) }
+    var isDeleting by remember(pin.id) { mutableStateOf(false) }
+    var deleteError by remember(pin.id) { mutableStateOf<String?>(null) }
+    val currentIsDeleting by rememberUpdatedState(isDeleting)
+    val sheetState = rememberModalBottomSheetState(
+        confirmValueChange = { target -> target != SheetValue.Hidden || !currentIsDeleting },
+    )
+    val deleteFailureMessage = stringResource(R.string.pin_delete_failed, pin.name)
+    ModalBottomSheet(
+        onDismissRequest = { if (!isDeleting) onDismiss() },
+        sheetState = sheetState,
+    ) {
         Column(
             modifier = Modifier
                 .fillMaxWidth()
@@ -1415,50 +1728,101 @@ private fun PinDetailSheet(
                 fontFamily = MicroLabelFont,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
             )
+            deleteError?.let { message ->
+                Text(
+                    text = message,
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.error,
+                )
+            }
             Row(
                 modifier = Modifier.fillMaxWidth().padding(top = 8.dp),
                 horizontalArrangement = Arrangement.SpaceBetween,
                 verticalAlignment = Alignment.CenterVertically,
             ) {
-                TextButton(onClick = onDelete) {
-                    Icon(
-                        Icons.Default.Delete,
-                        contentDescription = null,
-                        tint = MaterialTheme.colorScheme.error,
-                    )
+                TextButton(
+                    onClick = { showDeleteConfirmation = true },
+                    enabled = !isDeleting,
+                ) {
+                    if (isDeleting) {
+                        CircularProgressIndicator(modifier = Modifier.size(18.dp), strokeWidth = 2.dp)
+                    } else {
+                        Icon(
+                            Icons.Default.Delete,
+                            contentDescription = null,
+                            tint = MaterialTheme.colorScheme.error,
+                        )
+                    }
                     Text(
                         text = stringResource(R.string.pin_delete),
                         color = MaterialTheme.colorScheme.error,
                         modifier = Modifier.padding(start = 4.dp),
                     )
                 }
-                Button(onClick = onDirections) {
+                Button(onClick = onDirections, enabled = !isDeleting) {
                     Text(stringResource(R.string.route_directions))
                 }
             }
             Spacer(modifier = Modifier.height(8.dp))
         }
     }
+    if (showDeleteConfirmation) {
+        AlertDialog(
+            onDismissRequest = { showDeleteConfirmation = false },
+            title = {
+                Text(stringResource(R.string.pin_delete_confirm_title, pin.name))
+            },
+            text = { Text(stringResource(R.string.pin_delete_confirm_message)) },
+            confirmButton = {
+                TextButton(
+                    onClick = {
+                        showDeleteConfirmation = false
+                        isDeleting = true
+                        deleteError = null
+                        onDelete(
+                            { isDeleting = false },
+                            { error ->
+                                android.util.Log.e("MapScreen", "Deleting saved pin failed", error)
+                                isDeleting = false
+                                deleteError = deleteFailureMessage
+                            },
+                        )
+                    },
+                ) {
+                    Text(
+                        text = stringResource(R.string.pin_delete),
+                        color = MaterialTheme.colorScheme.error,
+                    )
+                }
+            },
+            dismissButton = {
+                TextButton(onClick = { showDeleteConfirmation = false }) {
+                    Text(stringResource(R.string.cancel))
+                }
+            },
+        )
+    }
 }
 
 @Composable
 private fun ColorChoiceRow(
-    colors: List<String>,
     selectedColor: String,
     onColorSelected: (String) -> Unit,
     modifier: Modifier = Modifier,
+    enabled: Boolean = true,
 ) {
     Row(
-        modifier = modifier.fillMaxWidth(),
+        modifier = modifier.fillMaxWidth().selectableGroup(),
         horizontalArrangement = Arrangement.spacedBy(8.dp, Alignment.CenterHorizontally),
     ) {
-        colors.forEach { colorHex ->
-            val isSelected = colorHex == selectedColor
+        PIN_COLOR_CHOICES.forEach { choice ->
+            val isSelected = choice.hex == selectedColor
+            val colorName = stringResource(choice.nameRes)
             Box(
                 modifier = Modifier
                     .size(48.dp)
                     .clip(CircleShape)
-                    .background(Color(android.graphics.Color.parseColor(colorHex)))
+                    .background(Color(android.graphics.Color.parseColor(choice.hex)))
                     .then(
                         if (isSelected) {
                             Modifier.border(2.dp, MaterialTheme.colorScheme.onSurface, CircleShape)
@@ -1466,10 +1830,41 @@ private fun ColorChoiceRow(
                             Modifier
                         },
                     )
-                    .clickable(onClickLabel = colorHex) { onColorSelected(colorHex) },
+                    .selectable(
+                        selected = isSelected,
+                        enabled = enabled,
+                        role = Role.RadioButton,
+                        onClick = { onColorSelected(choice.hex) },
+                    )
+                    .semantics { contentDescription = colorName },
             )
         }
     }
+}
+
+@Composable
+private fun DiscardPinChangesDialog(
+    onKeepEditing: () -> Unit,
+    onDiscard: () -> Unit,
+) {
+    AlertDialog(
+        onDismissRequest = onKeepEditing,
+        title = { Text(stringResource(R.string.pin_discard_confirm_title)) },
+        text = { Text(stringResource(R.string.pin_discard_confirm_message)) },
+        confirmButton = {
+            TextButton(onClick = onDiscard) {
+                Text(
+                    text = stringResource(R.string.pin_discard),
+                    color = MaterialTheme.colorScheme.error,
+                )
+            }
+        },
+        dismissButton = {
+            TextButton(onClick = onKeepEditing) {
+                Text(stringResource(R.string.pin_keep_editing))
+            }
+        },
+    )
 }
 
 @Composable

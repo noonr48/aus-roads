@@ -156,6 +156,41 @@ class SearchViewModelTest {
     }
 
     @Test
+    fun `retry reruns an unchanged failed query and publishes recovered results`() = runTest {
+        repository.throwOnSearch = true
+        viewModel.onQueryChange("Adelaide")
+        advanceUntilIdle()
+        assertThat(repository.searchQueries).containsExactly("Adelaide")
+        assertThat(viewModel.searchFailed.value).isTrue()
+
+        repository.throwOnSearch = false
+        repository.stubbedResults = listOf(
+            SearchResult("Adelaide", "city", null, -34.9285, 138.6007),
+        )
+        viewModel.onRetry()
+
+        assertThat(viewModel.query.value).isEqualTo("Adelaide")
+        assertThat(viewModel.isSearching.value).isTrue()
+        assertThat(viewModel.searchFailed.value).isFalse()
+
+        advanceUntilIdle()
+
+        assertThat(repository.searchQueries).containsExactly("Adelaide", "Adelaide").inOrder()
+        assertThat(viewModel.results.value.map { it.name }).containsExactly("Adelaide")
+        assertThat(viewModel.isSearching.value).isFalse()
+        assertThat(viewModel.searchFailed.value).isFalse()
+    }
+
+    @Test
+    fun `retry does nothing when there is no query`() = runTest {
+        viewModel.onRetry()
+        advanceUntilIdle()
+
+        assertThat(repository.searchQueries).isEmpty()
+        assertThat(viewModel.isSearching.value).isFalse()
+    }
+
+    @Test
     fun `unavailable index surfaces actionable state`() = runTest {
         repository.ready = false
 
@@ -209,6 +244,7 @@ private class FakeSearchRepository : SearchRepository {
     val resultsByQuery: MutableMap<String, List<SearchResult>> = mutableMapOf()
     val delayByQuery: MutableMap<String, Long> = mutableMapOf()
     var throwOnSearch: Boolean = false
+    val searchQueries: MutableList<String> = mutableListOf()
     private val readinessState = MutableStateFlow(true)
     var ready: Boolean = true
         set(value) {
@@ -221,6 +257,7 @@ private class FakeSearchRepository : SearchRepository {
     override val readiness: StateFlow<Boolean> = readinessState
 
     override suspend fun search(query: String, limit: Int, kind: String?): List<SearchResult> {
+        searchQueries += query
         if (throwOnSearch) throw RuntimeException("simulated index failure")
         delayByQuery[query]?.let { delay(it) }
         return resultsByQuery[query].orEmpty().ifEmpty { stubbedResults }.take(limit)

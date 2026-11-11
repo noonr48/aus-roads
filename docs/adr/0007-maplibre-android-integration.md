@@ -7,6 +7,11 @@ MapTiler/online fallback, no Google Play Services.
 
 **Author:** MapLibre sub-agent. **Date:** 2026-06-01.
 
+> **Historical integration plan.** Its no-location manifest assumptions are
+> superseded by [ADR 0008](./0008-opt-in-foreground-location.md). The `offline`
+> flavor still strips `INTERNET`, but now intentionally retains coarse/fine
+> foreground location for the user marker, Nearby, and navigation.
+
 ---
 
 ## 1. Artifact, version, ABI
@@ -386,7 +391,7 @@ is also poor — the emulator GPU path is software-rendered and the
 | `android/app/src/main/java/au/com/ausroads/ui/map/MapScreen.kt` | `AndroidView` + lifecycle wiring, tap-to-identify (`addOnMapClickListener`), long-press pin drop (`addOnMapLongClickListener`), inline `ModalBottomSheet`. |
 | `android/app/src/main/java/au/com/ausroads/ui/map/MapPackAvailability.kt` | asset existence check for bundled MBTiles in `assets/maptile/`. |
 | `android/app/src/main/assets/maptile/style.json` | bundled style with `glyphs` set to empty string (offline); sources point at `asset://` URI for MBTiles. |
-| `android/app/src/main/AndroidManifest.xml` | `tools:node="remove"` strips INTERNET, ACCESS_NETWORK_STATE, ACCESS_WIFI_STATE, ACCESS_COARSE_LOCATION, ACCESS_FINE_LOCATION from MapLibre AAR. |
+| `android/app/src/main/AndroidManifest.xml` | Current contract: shared coarse/fine foreground location; no background location. The `offline` flavor separately strips `INTERNET` (ADR 0008). |
 
 ## Sources cited
 

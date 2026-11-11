@@ -22,5 +22,10 @@ sealed interface NavigationState {
         val previousState: Navigating,
         val destination: GeoPoint,
     ) : NavigationState
+    data class RecalculationFailed(
+        val previousState: Navigating,
+        val lastAttemptOrigin: GeoPoint,
+        val destination: GeoPoint,
+    ) : NavigationState
     data object Arrived : NavigationState
 }

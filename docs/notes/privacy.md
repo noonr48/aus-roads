@@ -6,7 +6,44 @@ aus-roads is built around a single privacy promise: **the app does not track you
 
 This is not a marketing line. It is enforced in code and in CI.
 
-## v0.1 (offline-only) guarantees
+## Current accepted location contract
+
+Both app flavors offer optional **foreground** location. No location grant is
+required to open the app, browse or search the map, drop pins, inspect Nearby from
+its disclosed Adelaide fallback, or plan and inspect a route from manually chosen
+points.
+
+Android's approximate grant supports the user marker, recentering, and Nearby.
+Precise location is required only when the user chooses to start active live
+turn-by-turn navigation; route calculation and inspection do not require it. With
+only approximate access, the route sheet explains, “Map browsing works with
+approximate location, but live turn-by-turn directions need precise location,” and
+offers **Enable precise location**. If Android has blocked another permission
+prompt, it explains that precise location is blocked and offers **Open location
+settings**. Declining either path leaves the computed route available to inspect.
+
+Location subscriptions exist only while the relevant screen is in the foreground.
+Fixes are handled in memory and are not written to a location-history database,
+analytics, crash reports, or telemetry. The app does not request
+`ACCESS_BACKGROUND_LOCATION`.
+
+The two flavors retain different network boundaries:
+
+- **`offline`:** declares coarse/fine foreground location but no `INTERNET`. It
+  reads fixes from Android's on-device `LocationManager`; the app cannot transmit
+  them. Without a usable fix, location-aware browsing clearly falls back to the map
+  reference point and ultimately Adelaide.
+- **`withNetwork`:** declares the same foreground location pair plus network
+  permissions for separately disclosed features such as downloads and live
+  traffic. A location grant is not consent to analytics, location history, or a
+  background upload.
+
+This contract is accepted in
+[ADR 0008](../adr/0008-opt-in-foreground-location.md). The versioned sections
+below record how the product evolved; where an early milestone says "no location",
+ADR 0008 and this current-contract section supersede that historical constraint.
+
+## v0.1 (historical offline-only milestone) guarantees
 
 - **No INTERNET permission** in the shipped manifest. The app is a self-contained
   APK with an offline vector map of South Australia. Network calls are impossible
@@ -24,12 +61,17 @@ A CI gate (track F3 of the v0.1 sprint) runs `aapt dump permissions` on every
 build and fails if any transitive dependency adds `INTERNET`,
 `ACCESS_FINE_LOCATION`, or `ACCESS_COARSE_LOCATION`.
 
-## v0.1.1 (current)
+## v0.1.1 (historical milestone)
 
-v0.1.1 adds MapLibre Native Android SDK 11.5.2 for offline map rendering and Hilt for dependency injection. The privacy posture is unchanged:
+v0.1.1 added MapLibre Native Android SDK 11.5.2 for offline map rendering and
+Hilt for dependency injection. At that historical milestone:
 
-- **No INTERNET permission.** MapLibre's AAR bundles INTERNET, ACCESS_NETWORK_STATE, ACCESS_WIFI_STATE, ACCESS_COARSE_LOCATION, and ACCESS_FINE_LOCATION in its manifest. All five are stripped via `tools:node="remove"` in the app's AndroidManifest.xml. The merged manifest (verified via `aapt2 dump permissions`) contains only the auto-generated DYNAMIC_RECEIVER_NOT_EXPORTED_PERMISSION.
-- **No location permissions.** No ACCESS_*_LOCATION in the merged manifest.
+- **No INTERNET permission.** MapLibre's AAR bundled INTERNET,
+  ACCESS_NETWORK_STATE, ACCESS_WIFI_STATE, ACCESS_COARSE_LOCATION, and
+  ACCESS_FINE_LOCATION in its manifest. That milestone stripped all five via
+  `tools:node="remove"`.
+- **No location permissions at that milestone.** ADR 0008 later replaced this
+  constraint with the current foreground-only pair.
 - **No network code.** Zero calls to HttpURLConnection, OkHttpClient, Retrofit, or URL.openConnection() in any source file.
 - **No analytics or tracking.** No Firebase, Crashlytics, Google Play Services, or third-party analytics SDKs.
 - **Offline map tiles.** The bundled Adelaide test pack (19 MB MBTiles) is loaded from assets. No remote tile fetching.
@@ -41,10 +83,10 @@ When the Traffic SA overlay is added in v0.2, the privacy posture changes in
 one specific way: **the app gains the `INTERNET` permission to fetch live
 traffic data, but only when the user has the live overlay enabled**.
 
-What does NOT change in v0.2:
+What did NOT change as part of the traffic-overlay capability itself:
 
-- No location permission is added. Live traffic is fetched on a timer; the
-  app does not know where you are.
+- Traffic fetching adds no location purpose or additional permission. The current
+  foreground location pair is governed separately by ADR 0008.
 - No background location.
 - No analytics, no crash reporting.
 - No accounts, no sign-in.
@@ -83,7 +125,7 @@ v0.6 adds NSW and VIC traffic providers alongside the existing SA and DIT provid
 
 What does NOT change in v0.6:
 
-- No location permission for traffic fetching.
+- Traffic fetching itself does not use the foreground location grant.
 - No analytics or crash reporting.
 - No accounts, no sign-in.
 - Community hazard reports remain opt-in with the same privacy guarantees as v0.5.
@@ -92,7 +134,12 @@ What does NOT change in v0.6:
 
 v0.7 adds active navigation and live congestion data. The privacy posture evolves:
 
-- **GPS permission escalation.** Navigation requires `ACCESS_FINE_LOCATION` (upgraded from `ACCESS_COARSE_LOCATION` in v0.6). This is opt-in; the app functions without it but navigation mode is unavailable.
+- **Foreground location for navigation.** The app requests coarse and fine together
+  so Android can offer the user's approximate/precise choice. Approximate access
+  supports the map marker, recentering, and Nearby. Precise access is required only
+  to start active live turn-by-turn guidance; a route can still be planned and
+  inspected from manually chosen points when precise location or all location
+  access is declined.
 - **Navigation GPS data is processed in-memory only.** Location samples during navigation are used for route progress tracking and auto-reroute. They are not written to disk, not persisted in any database, and not transmitted to any server.
 - **Speed crowdsourcing is opt-in, default OFF.** Users can choose to share anonymized, segment-averaged speed data while actively navigating. Raw GPS traces are never stored or uploaded. The consent dialog explains exactly what is shared (segment + average speed) and what is not (raw trace, identity). Opt-out is available at any time in Settings.
 - **TTS uses Android's built-in engine.** Voice prompts are generated locally via `android.speech.tts.TextToSpeech`. No audio data is sent to any external server.
@@ -154,7 +201,9 @@ What does NOT change in v1.0:
 
 - No analytics or crash reporting.
 - No accounts, no sign-in.
-- No new permissions required beyond what v0.7 established.
+- Foreground coarse/fine location remains opt-in. Approximate access supports Map
+  and Nearby; precise access is required only for active live turn-by-turn guidance.
+- No background location permission.
 - Community hazard reports remain opt-in with the same privacy guarantees as v0.5.
 - All traffic providers continue to use ETag conditional GETs.
 - Navigation GPS data continues to be processed in-memory only.
@@ -168,7 +217,7 @@ What does NOT change in v1.0:
 | Settings | DataStore | No | N/A | Until user resets |
 | Route history | Room DB | No | N/A | Last 20 routes, local only |
 | Traffic events | Room DB | Fetched from official APIs | Traffic toggle | ETag-cached, local only |
-| Navigation GPS | In-memory only | No | Location permission | Not persisted |
+| Foreground device location (Map, Nearby, active navigation) | In-memory only | No in `offline`; no location-history/analytics stream in either flavor | Optional; approximate for Map/Nearby, precise only for active live turn-by-turn | Not persisted |
 | Community reports | Room DB + server | HTTPS to aus-roads server | Opt-in (default OFF) | 4 hours on server, local until delete |
 | Speed crowdsource | Segment averages only | HTTPS to aus-roads server | Opt-in (default OFF) | Anonymized, no raw traces |
 | Widget | Room DB (read-only) | No | N/A | Mirrors route history |

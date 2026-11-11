@@ -101,6 +101,7 @@ class TrafficSaProvider @Inject constructor() : LiveTrafficProvider {
                 cacheMaxAge = 5.minutes,
                 etag = etag,
                 lastModified = response.headers[HttpHeaders.LastModified],
+                notModified = true,
             )
         }
 

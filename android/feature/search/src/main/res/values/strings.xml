@@ -2,9 +2,11 @@
 <resources>
     <string name="search_placeholder">Search places, roads, POIs…</string>
     <string name="search_icon_desc">Search</string>
-    <string name="clear_icon_desc">Clear</string>
+    <string name="clear_icon_desc">Clear search</string>
     <string name="search_searching">Searching…</string>
     <string name="search_error">Search failed. Please try again.</string>
+    <string name="search_retry">Retry</string>
     <string name="search_unavailable">Search data is still preparing. If this persists, re-download the map pack and try again.</string>
+    <string name="search_manage_map_pack">Manage map pack</string>
     <string name="search_no_results">No results for “%s”</string>
 </resources>
